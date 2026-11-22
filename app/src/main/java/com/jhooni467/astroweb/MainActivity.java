@@ -72,7 +72,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** AstroWeb 0.14 — per-site permissions and an improved downloads library. */
+/** AstroWeb 0.15 — top-aligned page previews in the tab overview. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final int REQUEST_SAVE_PDF = 7101;
@@ -1900,12 +1900,14 @@ public class MainActivity extends Activity {
             float scale = Math.min(1f, (float) maxWidth / Math.max(1, bitmap.getWidth()));
             int width = Math.max(1, Math.round(bitmap.getWidth() * scale));
             int height = Math.max(1, Math.round(bitmap.getHeight() * scale));
-            return Bitmap.createScaledBitmap(bitmap, width, height, true);
+            Bitmap scaled = Bitmap.createScaledBitmap(bitmap, width, height, true);
+            // createScaledBitmap may return the original instance when dimensions match.
+            if (scaled != bitmap && !bitmap.isRecycled()) bitmap.recycle();
+            return scaled;
         } catch (RuntimeException | OutOfMemoryError error) {
             Log.w(TAG, "Could not scale visible tab preview", error);
-            return null;
-        } finally {
             if (!bitmap.isRecycled()) bitmap.recycle();
+            return null;
         }
     }
 
