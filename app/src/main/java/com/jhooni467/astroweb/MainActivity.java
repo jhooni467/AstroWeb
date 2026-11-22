@@ -353,7 +353,7 @@ public class MainActivity extends Activity {
 
         ImageButton home = bottomButton(R.drawable.ic_home, "Inicio", this::loadHome);
         bookmarkButton = bottomButton(R.drawable.ic_bookmark, "Marcadores", this::toggleBookmark);
-        ImageButton search = bottomButton(R.drawable.ic_search, "Buscar", this::focusAddress);
+        ImageButton search = bottomButton(R.drawable.ic_search, "Buscar", this::expandAddressBarFromFloatingButton);
         ImageButton tabs = bottomButton(R.drawable.ic_tabs, "Pestañas", this::showTabsDialog);
         ImageButton menu = bottomButton(R.drawable.ic_more, "Herramientas", () -> {});
         menu.setOnClickListener(v -> showBrowserMenu(v));
@@ -2747,11 +2747,12 @@ public class MainActivity extends Activity {
                 || currentUrl().equals(HOME_URL)) return;
         floatingSearchButton.animate().cancel();
         floatingSearchButton.setVisibility(View.VISIBLE);
-        floatingSearchButton.setEnabled(true);
-        floatingSearchButton.setClickable(true);
+        floatingSearchButton.setEnabled(false);
+        floatingSearchButton.setClickable(false);
         floatingSearchButton.setAlpha(0f);
         floatingSearchButton.setScaleX(0.82f);
         floatingSearchButton.setScaleY(0.82f);
+        floatingSearchButton.setTranslationX(0f);
         floatingSearchButton.setTranslationY(-dp(7));
         floatingSearchButton.animate()
                 .alpha(1f)
@@ -2760,6 +2761,12 @@ public class MainActivity extends Activity {
                 .translationY(0f)
                 .setDuration(190)
                 .setInterpolator(new DecelerateInterpolator(1.4f))
+                .withEndAction(() -> {
+                    if (addressBarHidden && floatingSearchButton.getVisibility() == View.VISIBLE) {
+                        floatingSearchButton.setEnabled(true);
+                        floatingSearchButton.setClickable(true);
+                    }
+                })
                 .start();
     }
 
