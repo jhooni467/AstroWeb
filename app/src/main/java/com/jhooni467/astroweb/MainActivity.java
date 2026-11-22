@@ -49,12 +49,12 @@ import java.util.Set;
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final String HOME_URL = "resource://android/assets/home.html";
-    private static final int BG = Color.rgb(16, 17, 23);
-    private static final int BAR = Color.rgb(20, 21, 28);
-    private static final int TEXT = Color.rgb(239, 239, 245);
-    private static final int MUTED = Color.rgb(153, 155, 169);
-    private static final int ACCENT = Color.rgb(186, 171, 255);
-    private static final int DIVIDER = Color.rgb(47, 48, 59);
+    private static final int BG = Color.rgb(19, 23, 20);
+    private static final int BAR = Color.rgb(27, 33, 28);
+    private static final int TEXT = Color.rgb(235, 239, 233);
+    private static final int MUTED = Color.rgb(157, 166, 156);
+    private static final int ACCENT = Color.rgb(169, 190, 166);
+    private static final int DIVIDER = Color.rgb(52, 62, 53);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<BrowserTab> tabs = new ArrayList<>();
