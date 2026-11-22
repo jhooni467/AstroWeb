@@ -46,11 +46,15 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.BufferedInputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.text.Normalizer;
 
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
@@ -62,6 +66,7 @@ import org.mozilla.geckoview.WebResponse;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.xmlpull.v1.XmlPullParser;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -69,10 +74,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** AstroWeb 0.16 — floating compact search control with a travel-to-expand animation. */
+/** AstroWeb 0.17 — global discovery trends and private, personalized search suggestions. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final int REQUEST_SAVE_PDF = 7101;
@@ -122,6 +129,7 @@ public class MainActivity extends Activity {
     private String pendingDownloadMime;
     private GeckoSession.PermissionDelegate.Callback pendingAndroidPermissionCallback;
     private boolean ignoreNextScrollUpdate = true;
+    private boolean globalTrendFetchInProgress = false;
     private static class BrowserTab {
         GeckoSession session;
         String url = HOME_URL;
@@ -142,6 +150,7 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BAR);
         storage = getSharedPreferences("astroweb_browser", MODE_PRIVATE);
+        migrateSearchHistoryFromVisitedPages();
         buildInterface();
         if (!restoreTabsFromStorage()) {
             BrowserTab initialTab = new BrowserTab();
@@ -435,32 +444,92 @@ public class MainActivity extends Activity {
     }
 
     private static class AddressSuggestion {
-        final String title, subtitle, url;
+        final String title;
+        final String subtitle;
+        final String url;
+        final String section;
+        final String searchQuery;
         final int icon;
-        final boolean search;
 
-        AddressSuggestion(String title, String subtitle, String url, int icon, boolean search) {
+        AddressSuggestion(String title, String subtitle, String url, String section,
+                String searchQuery, int icon) {
             this.title = title;
             this.subtitle = subtitle;
             this.url = url;
+            this.section = section;
+            this.searchQuery = searchQuery;
             this.icon = icon;
-            this.search = search;
         }
     }
 
-    private void showAddressSuggestions(String rawQuery) {
+    private static class SearchMemory {
+        final String query;
+        final int count;
+        final long lastUsed;
+        double score;
+
+        SearchMemory(String query, int count, long lastUsed) {
+            this.query = query;
+            this.count = count;
+            this.lastUsed = lastUsed;
+        }
+    }
+
+    private static class TrendMemory {
+        final String title;
+        final List<String> countries = new ArrayList<>();
+
+        TrendMemory(String title) {
+            this.title = title;
+        }
+    }
+
+        private void showAddressSuggestions(String rawQuery) {
         if (addressField == null || !addressField.hasFocus() || browserRoot == null) return;
+        refreshGlobalTrendsIfNeeded();
         dismissAddressSuggestions();
 
         String query = rawQuery == null ? "" : rawQuery.trim();
-        String lower = query.toLowerCase(java.util.Locale.ROOT);
         List<AddressSuggestion> suggestions = new ArrayList<>();
+
         if (!query.isEmpty()) {
-            suggestions.add(new AddressSuggestion("Buscar \"" + shorten(query, 32) + "\"",
-                    "Buscar en Google", null, R.drawable.ic_search, true));
+            suggestions.add(new AddressSuggestion(
+                    "Buscar \"" + shorten(query, 34) + "\"",
+                    "Buscar en Google", null, "BUSCAR", query,
+                    R.drawable.ic_search));
+        }
+
+        List<SearchMemory> personal = getPersonalSearchSuggestions(query, 4);
+        if (!personal.isEmpty()) {
+            String section = query.isEmpty()
+                    ? "TUS BÚSQUEDAS" : "RELACIONADAS CON TUS BÚSQUEDAS";
+            for (SearchMemory savedSearch : personal) {
+                suggestions.add(new AddressSuggestion(savedSearch.query,
+                        query.isEmpty()
+                                ? "Búsqueda anterior · " + savedSearch.count + " usos"
+                                : "Relacionada con tu actividad",
+                        null, section, savedSearch.query, R.drawable.ic_history));
+            }
+        }
+
+        List<JSONObject> trends = getGlobalTrendSuggestions(query, 5);
+        if (!trends.isEmpty()) {
+            String section = query.isEmpty()
+                    ? "TENDENCIAS EN VARIOS PAÍSES" : "TENDENCIAS RELACIONADAS";
+            for (JSONObject trend : trends) {
+                String title = trend.optString("title", "").trim();
+                if (title.isEmpty()) continue;
+                suggestions.add(new AddressSuggestion(title,
+                        trendCountrySubtitle(trend),
+                        null, section, title, R.drawable.ic_search));
+            }
         }
 
         Set<String> unique = new HashSet<>();
+        for (AddressSuggestion item : suggestions) {
+            if (item.searchQuery != null) unique.add(normalizeSearchText(item.searchQuery));
+        }
+
         List<String> saved = new ArrayList<>(
                 storage.getStringSet("bookmarks", new HashSet<>()));
         Collections.reverse(saved);
@@ -472,19 +541,39 @@ public class MainActivity extends Activity {
             }
         }
 
-        List<String> candidates = new ArrayList<>();
-        candidates.addAll(saved);
-        candidates.addAll(recent);
-        for (String url : candidates) {
-            if (!unique.add(url)) continue;
+        int siteSuggestions = 0;
+        for (String url : saved) {
+            if (siteSuggestions >= 3) break;
             String host = getTabHost(url);
-            String match = (host + " " + url).toLowerCase(java.util.Locale.ROOT);
-            if (!query.isEmpty() && !match.contains(lower)) continue;
-            boolean isBookmark = saved.contains(url);
-            suggestions.add(new AddressSuggestion(host,
-                    isBookmark ? "Marcador guardado" : "Visitado recientemente",
-                    url, isBookmark ? R.drawable.ic_bookmark : R.drawable.ic_history, false));
-            if (suggestions.size() >= 5) break;
+            String match = (host + " " + url).toLowerCase(Locale.ROOT);
+            if (!query.isEmpty() && !match.contains(query.toLowerCase(Locale.ROOT))) continue;
+            if (!unique.add(normalizeSearchText(host))) continue;
+            suggestions.add(new AddressSuggestion(host, "Marcador guardado",
+                    url, "SITIOS Y MARCADORES", null, R.drawable.ic_bookmark));
+            siteSuggestions++;
+        }
+
+        for (String url : recent) {
+            if (siteSuggestions >= 6) break;
+            String host = getTabHost(url);
+            String match = (host + " " + url).toLowerCase(Locale.ROOT);
+            if (!query.isEmpty() && !match.contains(query.toLowerCase(Locale.ROOT))) continue;
+            if (!unique.add(normalizeSearchText(url))) continue;
+            suggestions.add(new AddressSuggestion(host, "Visitado recientemente",
+                    url, "SITIOS Y MARCADORES", null, R.drawable.ic_history));
+            siteSuggestions++;
+        }
+
+        if (query.isEmpty() && suggestions.isEmpty()) {
+            suggestions.add(new AddressSuggestion("Ciencia y espacio",
+                    "Explorar un tema", null, "DESCUBRIR", "ciencia y espacio",
+                    R.drawable.ic_search));
+            suggestions.add(new AddressSuggestion("Tecnología",
+                    "Explorar un tema", null, "DESCUBRIR", "tecnología",
+                    R.drawable.ic_search));
+            suggestions.add(new AddressSuggestion("Música y cultura",
+                    "Explorar un tema", null, "DESCUBRIR", "música y cultura",
+                    R.drawable.ic_search));
         }
         if (suggestions.isEmpty()) return;
 
@@ -497,16 +586,22 @@ public class MainActivity extends Activity {
         background.setStroke(dp(1), Color.rgb(57, 68, 58));
         panel.setBackground(background);
 
-        TextView heading = new TextView(this);
-        heading.setText(query.isEmpty() ? "VISITAS RECIENTES" : "SUGERENCIAS");
-        heading.setTextColor(MUTED);
-        heading.setTextSize(9);
-        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        heading.setLetterSpacing(.12f);
-        heading.setPadding(dp(11), dp(5), dp(11), dp(7));
-        panel.addView(heading);
-
+        String activeSection = null;
+        int sectionCount = 0;
         for (AddressSuggestion suggestion : suggestions) {
+            if (!suggestion.section.equals(activeSection)) {
+                activeSection = suggestion.section;
+                sectionCount++;
+                TextView heading = new TextView(this);
+                heading.setText(activeSection);
+                heading.setTextColor(MUTED);
+                heading.setTextSize(9);
+                heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                heading.setLetterSpacing(.12f);
+                heading.setPadding(dp(11), dp(8), dp(11), dp(7));
+                panel.addView(heading);
+            }
+
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.HORIZONTAL);
             item.setGravity(Gravity.CENTER_VERTICAL);
@@ -545,17 +640,24 @@ public class MainActivity extends Activity {
 
             item.setOnClickListener(v -> {
                 dismissAddressSuggestions();
-                String target = suggestion.search
-                        ? "https://www.google.com/search?q=" + Uri.encode(query)
+                String target = suggestion.searchQuery != null
+                        ? "https://www.google.com/search?q="
+                                + Uri.encode(suggestion.searchQuery)
                         : suggestion.url;
-                navigate(target);
+                if (target != null) navigate(target);
             });
             panel.addView(item, new LinearLayout.LayoutParams(-1, dp(52)));
         }
 
-        suggestionPopup = new PopupWindow(panel,
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(panel, new ScrollView.LayoutParams(-1, -2));
+        int popupHeight = Math.min(dp(430),
+                dp(12) + suggestions.size() * dp(52) + sectionCount * dp(25));
+        suggestionPopup = new PopupWindow(scroll,
                 getResources().getDisplayMetrics().widthPixels - dp(20),
-                WindowManager.LayoutParams.WRAP_CONTENT, false);
+                popupHeight, false);
         suggestionPopup.setFocusable(false);
         suggestionPopup.setTouchable(true);
         suggestionPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
@@ -565,6 +667,354 @@ public class MainActivity extends Activity {
         suggestionPopup.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         suggestionPopup.setOnDismissListener(() -> suggestionPopup = null);
         suggestionPopup.showAsDropDown(addressRow, -dp(1), dp(5));
+    }
+
+    private String normalizeSearchText(String value) {
+        if (value == null) return "";
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "")
+                .toLowerCase(Locale.ROOT)
+                .trim();
+    }
+
+    private Set<String> searchTokens(String value) {
+        Set<String> tokens = new HashSet<>();
+        String normalized = normalizeSearchText(value);
+        if (normalized.isEmpty()) return tokens;
+        String[] stopWords = {
+                "que", "como", "para", "por", "con", "del", "las", "los", "una", "uno",
+                "the", "and", "for", "you", "your", "with", "from", "what", "how", "why",
+                "when", "where", "this", "that", "are", "was", "the"
+        };
+        Set<String> stop = new HashSet<>(java.util.Arrays.asList(stopWords));
+        for (String token : normalized.split("[^\\p{L}\\p{N}]+")) {
+            if (token.length() >= 3 && !stop.contains(token)) tokens.add(token);
+        }
+        return tokens;
+    }
+
+    private boolean isSafeRecommendation(String value) {
+        String normalized = normalizeSearchText(value);
+        if (normalized.isEmpty()) return false;
+        String[] blocked = {
+                "porn", "porno", "pornografia", "nsfw", "onlyfans", "only fans",
+                "casino", "gambling", "betting", "sports betting", "apuesta", "apuestas",
+                "apostar", "alcohol", "cerveza", "vodka", "whisky", "cigarrillo",
+                "cigarrillos", "vape", "vaping", "nicotina", "marihuana", "cannabis",
+                "marijuana", "cocaine", "cocaina", "heroin", "heroina", "fentanyl",
+                "metanfetamina", "drogas", "suicide", "suicidio", "self harm",
+                "autolesion", "weapon", "weapons", "firearm", "firearms", "guns",
+                "rifle", "pistola", "pistolas", "armas", "explosivo", "explosivos",
+                "bomb", "grenade", "prostitucion", "escort", "sexo"
+        };
+        for (String term : blocked) {
+            if (normalized.contains(term)) return false;
+        }
+        return true;
+    }
+
+    private void recordSearchQuery(String rawQuery, boolean privateMode) {
+        if (privateMode || storage == null) return;
+        storeSearchQuery(rawQuery);
+    }
+
+    private void storeSearchQuery(String rawQuery) {
+        String query = rawQuery == null ? "" : rawQuery.trim().replaceAll("\\s+", " ");
+        if (query.length() < 2 || query.length() > 120 || !isSafeRecommendation(query)) return;
+
+        String normalized = normalizeSearchText(query);
+        long now = System.currentTimeMillis();
+        JSONArray existing;
+        try {
+            existing = new JSONArray(storage.getString("search_queries", "[]"));
+        } catch (JSONException error) {
+            existing = new JSONArray();
+        }
+
+        JSONObject updatedItem = null;
+        JSONArray updated = new JSONArray();
+        for (int i = 0; i < existing.length(); i++) {
+            JSONObject item = existing.optJSONObject(i);
+            if (item == null) continue;
+            String savedQuery = item.optString("query", "");
+            if (normalizeSearchText(savedQuery).equals(normalized)) {
+                int count = item.optInt("count", 1);
+                long lastUsed = item.optLong("lastUsed", 0L);
+                if (now - lastUsed > 60_000L) count++;
+                updatedItem = new JSONObject();
+                try {
+                    updatedItem.put("query", savedQuery);
+                    updatedItem.put("count", count);
+                    updatedItem.put("lastUsed", now);
+                } catch (JSONException ignored) { }
+            } else {
+                updated.put(item);
+            }
+        }
+
+        if (updatedItem == null) {
+            updatedItem = new JSONObject();
+            try {
+                updatedItem.put("query", query);
+                updatedItem.put("count", 1);
+                updatedItem.put("lastUsed", now);
+            } catch (JSONException ignored) { }
+        }
+        JSONArray reordered = new JSONArray();
+        reordered.put(updatedItem);
+        for (int i = 0; i < updated.length() && reordered.length() < 40; i++) {
+            reordered.put(updated.opt(i));
+        }
+        storage.edit().putString("search_queries", reordered.toString()).apply();
+    }
+
+    private void migrateSearchHistoryFromVisitedPages() {
+        if (storage.getBoolean("search_query_migration_v1", false)) return;
+        String history = storage.getString("history", "");
+        if (!history.isEmpty()) {
+            for (String url : history.split("\\n")) {
+                String query = extractSearchQueryFromUrl(url);
+                if (query != null) storeSearchQuery(query);
+            }
+        }
+        storage.edit().putBoolean("search_query_migration_v1", true).apply();
+    }
+
+    private String extractSearchQueryFromUrl(String urlText) {
+        if (urlText == null || urlText.isEmpty()) return null;
+        try {
+            Uri uri = Uri.parse(urlText);
+            String host = uri.getHost();
+            String path = uri.getPath();
+            if (host == null || path == null) return null;
+            host = host.toLowerCase(Locale.ROOT);
+            path = path.toLowerCase(Locale.ROOT);
+
+            boolean google = host.contains("google.");
+            boolean bing = host.contains("bing.com") && path.startsWith("/search");
+            boolean duckDuckGo = host.contains("duckduckgo.com");
+            boolean yahoo = host.contains("search.yahoo.");
+            boolean brave = host.contains("search.brave.com");
+            boolean youtube = host.contains("youtube.com") && path.equals("/results");
+
+            String parameter = youtube ? "search_query" : "q";
+            boolean knownSearch = (google && path.equals("/search"))
+                    || bing || duckDuckGo || yahoo || brave || youtube;
+            if (!knownSearch) return null;
+            String query = uri.getQueryParameter(parameter);
+            return query == null || query.trim().isEmpty() ? null : query.trim();
+        } catch (RuntimeException error) {
+            return null;
+        }
+    }
+
+    private List<SearchMemory> getPersonalSearchSuggestions(String query, int limit) {
+        List<SearchMemory> matches = new ArrayList<>();
+        JSONArray entries;
+        try {
+            entries = new JSONArray(storage.getString("search_queries", "[]"));
+        } catch (JSONException error) {
+            return matches;
+        }
+
+        Set<String> queryTokens = searchTokens(query);
+        String normalizedQuery = normalizeSearchText(query);
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject item = entries.optJSONObject(i);
+            if (item == null) continue;
+            String savedQuery = item.optString("query", "").trim();
+            if (savedQuery.isEmpty() || !isSafeRecommendation(savedQuery)) continue;
+            String normalizedSaved = normalizeSearchText(savedQuery);
+            if (!normalizedQuery.isEmpty() && normalizedSaved.equals(normalizedQuery)) continue;
+
+            int count = item.optInt("count", 1);
+            long lastUsed = item.optLong("lastUsed", 0L);
+            SearchMemory memory = new SearchMemory(savedQuery, count, lastUsed);
+            if (normalizedQuery.isEmpty()) {
+                memory.score = count * 8.0 + Math.max(0, 30.0
+                        - (now - lastUsed) / 86_400_000.0);
+            } else {
+                Set<String> savedTokens = searchTokens(savedQuery);
+                int overlap = 0;
+                for (String token : queryTokens) {
+                    if (savedTokens.contains(token)) overlap++;
+                }
+                boolean startsWith = normalizedSaved.startsWith(normalizedQuery);
+                if (overlap == 0 && !startsWith) continue;
+                memory.score = overlap * 100.0 + (startsWith ? 35.0 : 0.0)
+                        + count * 3.0
+                        + Math.max(0, 14.0 - (now - lastUsed) / 86_400_000.0);
+            }
+            matches.add(memory);
+        }
+
+        Collections.sort(matches, (first, second) ->
+                Double.compare(second.score, first.score));
+        if (matches.size() > limit) return new ArrayList<>(matches.subList(0, limit));
+        return matches;
+    }
+
+    private List<JSONObject> getGlobalTrendSuggestions(String query, int limit) {
+        List<JSONObject> matches = new ArrayList<>();
+        JSONArray entries;
+        try {
+            entries = new JSONArray(storage.getString("global_trends", "[]"));
+        } catch (JSONException error) {
+            return matches;
+        }
+        Set<String> queryTokens = searchTokens(query);
+        String normalizedQuery = normalizeSearchText(query);
+        List<JSONObject> ranked = new ArrayList<>();
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject item = entries.optJSONObject(i);
+            if (item == null) continue;
+            String title = item.optString("title", "").trim();
+            if (title.isEmpty() || !isSafeRecommendation(title)) continue;
+            if (!normalizedQuery.isEmpty()) {
+                Set<String> trendTokens = searchTokens(title);
+                boolean related = normalizedQuery.length() >= 3
+                        && normalizeSearchText(title).contains(normalizedQuery);
+                for (String token : queryTokens) {
+                    if (trendTokens.contains(token)) related = true;
+                }
+                if (!related) continue;
+            }
+            ranked.add(item);
+        }
+        for (int i = 0; i < ranked.size() && i < limit; i++) matches.add(ranked.get(i));
+        return matches;
+    }
+
+    private String trendCountrySubtitle(JSONObject trend) {
+        String countries = trend.optString("countries", "");
+        if (countries.isEmpty()) return "Tendencia de búsqueda";
+        return "Popular en " + countries;
+    }
+
+    private void refreshGlobalTrendsIfNeeded() {
+        if (storage == null || globalTrendFetchInProgress || ioExecutor.isShutdown()) return;
+        long now = System.currentTimeMillis();
+        long updatedAt = storage.getLong("global_trends_updated_at", 0L);
+        long retryAfter = storage.getLong("global_trends_retry_after", 0L);
+        if (now - updatedAt < 6L * 60L * 60L * 1000L || now < retryAfter) return;
+
+        globalTrendFetchInProgress = true;
+        ioExecutor.execute(() -> {
+            String[] geographies = {"MX", "US", "ES", "BR", "JP"};
+            String[] names = {
+                    "México", "Estados Unidos", "España", "Brasil", "Japón"
+            };
+            LinkedHashMap<String, TrendMemory> collected = new LinkedHashMap<>();
+            int successfulFeeds = 0;
+            for (int i = 0; i < geographies.length; i++) {
+                List<String> titles = fetchGoogleTrendFeed(geographies[i]);
+                if (!titles.isEmpty()) successfulFeeds++;
+                for (String title : titles) {
+                    if (!isSafeRecommendation(title)) continue;
+                    String key = normalizeSearchText(title);
+                    if (key.isEmpty()) continue;
+                    TrendMemory entry = collected.get(key);
+                    if (entry == null) {
+                        entry = new TrendMemory(title);
+                        collected.put(key, entry);
+                    }
+                    if (!entry.countries.contains(names[i])) entry.countries.add(names[i]);
+                }
+            }
+
+            List<TrendMemory> ranked = new ArrayList<>(collected.values());
+            Collections.sort(ranked, (first, second) -> {
+                int count = Integer.compare(second.countries.size(), first.countries.size());
+                if (count != 0) return count;
+                boolean firstMexico = first.countries.contains("México");
+                boolean secondMexico = second.countries.contains("México");
+                if (firstMexico != secondMexico) return firstMexico ? -1 : 1;
+                return first.title.compareToIgnoreCase(second.title);
+            });
+
+            JSONArray cached = new JSONArray();
+            for (int i = 0; i < ranked.size() && i < 18; i++) {
+                TrendMemory trend = ranked.get(i);
+                JSONObject item = new JSONObject();
+                try {
+                    item.put("title", trend.title);
+                    item.put("countries", String.join(", ", trend.countries));
+                    item.put("score", trend.countries.size());
+                    cached.put(item);
+                } catch (JSONException ignored) { }
+            }
+
+            final int feedCount = successfulFeeds;
+            final JSONArray finalCache = cached;
+            handler.post(() -> {
+                globalTrendFetchInProgress = false;
+                if (isFinishing() || isDestroyed()) return;
+                long fetchedAt = System.currentTimeMillis();
+                if (feedCount > 0 && finalCache.length() > 0) {
+                    storage.edit()
+                            .putString("global_trends", finalCache.toString())
+                            .putLong("global_trends_updated_at", fetchedAt)
+                            .remove("global_trends_retry_after")
+                            .apply();
+                } else {
+                    // Avoid retrying each time a character is typed when the feed is offline.
+                    storage.edit().putLong("global_trends_retry_after",
+                            fetchedAt + 30L * 60L * 1000L).apply();
+                }
+                if (addressField != null && addressField.hasFocus()) {
+                    showAddressSuggestions(addressField.getText().toString());
+                }
+            });
+        });
+    }
+
+    private List<String> fetchGoogleTrendFeed(String geography) {
+        List<String> titles = new ArrayList<>();
+        HttpURLConnection connection = null;
+        try {
+            URL endpoint = new URL(
+                    "https://trends.google.com/trending/rss?geo=" + geography);
+            connection = (HttpURLConnection) endpoint.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(6500);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("Accept", "application/rss+xml, application/xml, text/xml");
+            connection.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 "
+                            + "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 AstroWeb");
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) return titles;
+
+            try (InputStream input = new BufferedInputStream(connection.getInputStream())) {
+                XmlPullParser parser = android.util.Xml.newPullParser();
+                parser.setInput(input, "UTF-8");
+                int itemDepth = -1;
+                int event = parser.getEventType();
+                while (event != XmlPullParser.END_DOCUMENT) {
+                    if (event == XmlPullParser.START_TAG) {
+                        String tag = parser.getName();
+                        if ("item".equalsIgnoreCase(tag)) {
+                            itemDepth = parser.getDepth();
+                        } else if (itemDepth > 0 && "title".equalsIgnoreCase(tag)
+                                && parser.getDepth() == itemDepth + 1) {
+                            String title = parser.nextText().trim();
+                            if (!title.isEmpty() && !titles.contains(title)) titles.add(title);
+                        }
+                    } else if (event == XmlPullParser.END_TAG
+                            && itemDepth == parser.getDepth()
+                            && "item".equalsIgnoreCase(parser.getName())) {
+                        itemDepth = -1;
+                    }
+                    event = parser.next();
+                }
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "Could not load Google Trends feed for " + geography, error);
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+        return titles;
     }
 
     private void createTab(String url) {
@@ -761,6 +1211,8 @@ public class MainActivity extends Activity {
                         if (uri == null) return;
                         if (!uri.equals(tab.url)) tab.serializedState = null;
                         tab.url = uri;
+                        String searchQuery = extractSearchQueryFromUrl(uri);
+                        if (searchQuery != null) recordSearchQuery(searchQuery, tab.privateMode);
                         if (!tab.privateMode) storage.edit().putString("last_url", uri).apply();
                         if (uri.equals(HOME_URL)) {
                             lastScrollY = 0;
@@ -2668,9 +3120,13 @@ public class MainActivity extends Activity {
             actions.add(() -> navigate(url));
         }
         showBottomSheet("Historial", labels, subtitles, icons, actions,
-                null, null, "Borrar historial", () -> {
-                    storage.edit().remove("history").commit();
-                    Toast.makeText(this, "Historial borrado", Toast.LENGTH_SHORT).show();
+                null, null, "Borrar historial y búsquedas", () -> {
+                    storage.edit()
+                            .remove("history")
+                            .remove("search_queries")
+                            .commit();
+                    Toast.makeText(this, "Historial y búsquedas borrados",
+                            Toast.LENGTH_SHORT).show();
                 });
     }
 
