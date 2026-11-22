@@ -819,6 +819,7 @@ public class MainActivity extends Activity {
                         try {
                             activeTab.session.setFocused(false);
                             activeTab.session.setActive(false);
+                            activeTab.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
                         } catch (RuntimeException ignored) { }
                     }
                     activeTab = tab;
@@ -927,7 +928,8 @@ public class MainActivity extends Activity {
 
     private void activateTab(BrowserTab tab) {
         if (tab == null) return;
-        if (tab.session == null) {
+        if (tab.session == null || !tab.session.isOpen()) {
+            if (tab.session != null) tab.session = null;
             initializeTab(tab, tab.url, true);
             return;
         }
@@ -2060,8 +2062,10 @@ public class MainActivity extends Activity {
         for (BrowserTab tab : tabs) {
             if (tab.session == null) continue;
             try {
+                if (!tab.session.isOpen()) continue;
                 if (tab == activeTab) tab.session.setFocused(false);
                 tab.session.setActive(false);
+                tab.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
                 tab.session.flushSessionState();
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not pause browser session cleanly", error);
@@ -2076,8 +2080,13 @@ public class MainActivity extends Activity {
         super.onResume();
         if (activeTab != null && activeTab.session != null) {
             try {
-                activeTab.session.setActive(true);
-                activeTab.session.setFocused(true);
+                if (!activeTab.session.isOpen()) {
+                    initializeTab(activeTab, activeTab.url, true);
+                } else {
+                    activeTab.session.setActive(true);
+                    activeTab.session.setFocused(true);
+                    activeTab.session.setPriorityHint(GeckoSession.PRIORITY_HIGH);
+                }
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not resume browser session cleanly", error);
             }
