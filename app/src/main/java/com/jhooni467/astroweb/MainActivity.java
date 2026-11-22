@@ -72,7 +72,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** AstroWeb 0.15 — top-aligned page previews in the tab overview. */
+/** AstroWeb 0.16 — floating compact search control with a travel-to-expand animation. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final int REQUEST_SAVE_PDF = 7101;
@@ -96,6 +96,8 @@ public class MainActivity extends Activity {
     private TextView tabCounter;
     private LinearLayout addressRow;
     private LinearLayout topChrome;
+    private ImageButton addressSearchButton;
+    private ImageButton floatingSearchButton;
     private View addressDivider;
     private ProgressBar pageProgress;
     private ImageButton clearAddressButton;
@@ -237,9 +239,9 @@ public class MainActivity extends Activity {
         addressSurface.setStroke(dp(1), Color.rgb(56, 67, 57));
         addressRow.setBackground(addressSurface);
 
-        ImageButton searchIcon = iconButton(R.drawable.ic_search, "Buscar", this::focusAddress);
-        searchIcon.setImageTintList(ColorStateList.valueOf(MUTED));
-        addressRow.addView(searchIcon, new LinearLayout.LayoutParams(dp(36), dp(42)));
+        addressSearchButton = iconButton(R.drawable.ic_search, "Buscar", this::focusAddress);
+        addressSearchButton.setImageTintList(ColorStateList.valueOf(MUTED));
+        addressRow.addView(addressSearchButton, new LinearLayout.LayoutParams(dp(36), dp(42)));
 
         addressField = new EditText(this);
         addressField.setSingleLine(true);
@@ -318,6 +320,27 @@ public class MainActivity extends Activity {
 
         browserRoot.addView(topChrome,
                 new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+
+        floatingSearchButton = new ImageButton(this);
+        floatingSearchButton.setImageResource(R.drawable.ic_search);
+        floatingSearchButton.setImageTintList(ColorStateList.valueOf(ACCENT));
+        floatingSearchButton.setScaleType(ImageView.ScaleType.CENTER);
+        floatingSearchButton.setPadding(dp(10), dp(10), dp(10), dp(10));
+        floatingSearchButton.setContentDescription("Mostrar barra de búsqueda");
+        GradientDrawable floatingSearchBackground = new GradientDrawable();
+        floatingSearchBackground.setShape(GradientDrawable.OVAL);
+        floatingSearchBackground.setColor(Color.rgb(31, 40, 33));
+        floatingSearchBackground.setStroke(dp(1), Color.rgb(91, 112, 92));
+        floatingSearchButton.setBackground(floatingSearchBackground);
+        applySoftRipple(floatingSearchButton);
+        floatingSearchButton.setElevation(dp(16));
+        floatingSearchButton.setVisibility(View.GONE);
+        floatingSearchButton.setOnClickListener(v -> expandAddressBarFromFloatingButton());
+        FrameLayout.LayoutParams floatingSearchParams = new FrameLayout.LayoutParams(
+                dp(44), dp(44), Gravity.TOP | Gravity.END);
+        floatingSearchParams.topMargin = dp(12);
+        floatingSearchParams.rightMargin = dp(12);
+        browserRoot.addView(floatingSearchButton, floatingSearchParams);
 
         View bottomDivider = new View(this);
         bottomDivider.setBackgroundColor(DIVIDER);
@@ -850,25 +873,25 @@ public class MainActivity extends Activity {
                     if (currentY <= dp(2)) {
                         scrollAccumulator = 0f;
                         scrollDirection = 0;
-                        animateAddressBar(true);
                         return;
                     }
                     if (delta == 0) return;
 
-                    // Count every real scroll step, including tiny changes from slow drags.
-                    // Opposite movement cancels the accumulator naturally, filtering jitter.
+                    // Only downward movement can collapse the address bar.
+                    // Upward movement never reopens it; the floating search control does.
+                    if (delta < 0) {
+                        scrollAccumulator = 0f;
+                        scrollDirection = -1;
+                        return;
+                    }
+                    scrollDirection = 1;
+                    if (addressBarHidden) return;
+
                     scrollAccumulator += delta;
                     float hideThreshold = dp(42);
-                    float showThreshold = -dp(30);
-                    scrollAccumulator = Math.max(showThreshold,
-                            Math.min(hideThreshold, scrollAccumulator));
-
-                    if (!addressBarHidden && scrollAccumulator >= hideThreshold) {
+                    if (scrollAccumulator >= hideThreshold) {
                         scrollAccumulator = 0f;
                         animateAddressBar(false);
-                    } else if (addressBarHidden && scrollAccumulator <= showThreshold) {
-                        scrollAccumulator = 0f;
-                        animateAddressBar(true);
                     }
                 }
             });
@@ -2719,6 +2742,132 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showFloatingSearchButton() {
+        if (floatingSearchButton == null || !addressBarHidden
+                || currentUrl().equals(HOME_URL)) return;
+        floatingSearchButton.animate().cancel();
+        floatingSearchButton.setVisibility(View.VISIBLE);
+        floatingSearchButton.setEnabled(true);
+        floatingSearchButton.setClickable(true);
+        floatingSearchButton.setAlpha(0f);
+        floatingSearchButton.setScaleX(0.82f);
+        floatingSearchButton.setScaleY(0.82f);
+        floatingSearchButton.setTranslationY(-dp(7));
+        floatingSearchButton.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .translationY(0f)
+                .setDuration(190)
+                .setInterpolator(new DecelerateInterpolator(1.4f))
+                .start();
+    }
+
+    private void hideFloatingSearchButton() {
+        if (floatingSearchButton == null) return;
+        floatingSearchButton.animate().cancel();
+        floatingSearchButton.setVisibility(View.GONE);
+        floatingSearchButton.setEnabled(false);
+        floatingSearchButton.setClickable(false);
+        floatingSearchButton.setAlpha(1f);
+        floatingSearchButton.setScaleX(1f);
+        floatingSearchButton.setScaleY(1f);
+        floatingSearchButton.setTranslationX(0f);
+        floatingSearchButton.setTranslationY(0f);
+    }
+
+    private void expandAddressBarFromFloatingButton() {
+        if (floatingSearchButton == null || topChrome == null || addressSearchButton == null) {
+            animateAddressBar(true);
+            return;
+        }
+        if (!addressBarHidden) {
+            focusAddress();
+            return;
+        }
+
+        final int token = ++addressAnimationToken;
+        if (addressAnimator != null) {
+            addressAnimator.cancel();
+            addressAnimator = null;
+        }
+
+        addressBarHidden = false;
+        scrollAccumulator = 0f;
+        setBrowserContentTopOffset(true);
+        topChrome.setVisibility(View.VISIBLE);
+        int distance = topChrome.getHeight() > 0 ? topChrome.getHeight() : dp(55);
+        topChrome.setTranslationY(-distance);
+        topChrome.setAlpha(0f);
+
+        floatingSearchButton.animate().cancel();
+        floatingSearchButton.setEnabled(false);
+        floatingSearchButton.setClickable(false);
+
+        // Wait for the toolbar to be laid out before calculating the destination.
+        topChrome.post(() -> {
+            if (token != addressAnimationToken || isFinishing() || isDestroyed()) return;
+
+            int[] floatingLocation = new int[2];
+            int[] targetLocation = new int[2];
+            floatingSearchButton.getLocationOnScreen(floatingLocation);
+            addressSearchButton.getLocationOnScreen(targetLocation);
+
+            float fromX = floatingSearchButton.getTranslationX();
+            float fromY = floatingSearchButton.getTranslationY();
+            float targetX = targetLocation[0] + (addressSearchButton.getWidth()
+                    - floatingSearchButton.getWidth()) / 2f - floatingLocation[0];
+            // The search icon is inside a toolbar currently translated above the screen.
+            float targetY = targetLocation[1] + distance
+                    + (addressSearchButton.getHeight() - floatingSearchButton.getHeight()) / 2f
+                    - floatingLocation[1];
+            float toX = fromX + targetX;
+            float toY = fromY + targetY;
+
+            ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+            addressAnimator = animator;
+            animator.setDuration(360);
+            animator.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+            animator.addUpdateListener(value -> {
+                float t = (float) value.getAnimatedValue();
+                floatingSearchButton.setTranslationX(fromX + (toX - fromX) * t);
+                floatingSearchButton.setTranslationY(fromY + (toY - fromY) * t);
+                floatingSearchButton.setScaleX(1f - 0.48f * t);
+                floatingSearchButton.setScaleY(1f - 0.48f * t);
+                floatingSearchButton.setAlpha(1f - t);
+                topChrome.setTranslationY(-distance * (1f - t));
+                topChrome.setAlpha(t);
+            });
+            animator.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator animation) {
+                    if (token != addressAnimationToken) return;
+                    topChrome.setTranslationY(0f);
+                    topChrome.setAlpha(1f);
+                    floatingSearchButton.setVisibility(View.GONE);
+                    floatingSearchButton.setTranslationX(0f);
+                    floatingSearchButton.setTranslationY(0f);
+                    floatingSearchButton.setScaleX(1f);
+                    floatingSearchButton.setScaleY(1f);
+                    floatingSearchButton.setAlpha(1f);
+                    addressAnimator = null;
+                    ignoreNextScrollUpdate = true;
+                    lastScrollY = 0;
+                    scrollAccumulator = 0f;
+
+                    addressField.requestFocus();
+                    addressField.setSelection(addressField.getText().length());
+                    InputMethodManager manager = (InputMethodManager)
+                            getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (manager != null) {
+                        manager.showSoftInput(addressField, InputMethodManager.SHOW_IMPLICIT);
+                    }
+                    showAddressSuggestions(addressField.getText().toString());
+                }
+            });
+            animator.start();
+        });
+    }
+
     private void setBrowserContentTopOffset(boolean toolbarVisible) {
         if (browserFrame == null) return;
         FrameLayout.LayoutParams params =
@@ -2747,6 +2896,7 @@ public class MainActivity extends Activity {
         if (show) {
             setBrowserContentTopOffset(true);
             topChrome.setVisibility(View.VISIBLE);
+            hideFloatingSearchButton();
         }
 
         View chrome = topChrome;
@@ -2790,6 +2940,9 @@ public class MainActivity extends Activity {
                 if (!show) {
                     chrome.setVisibility(View.GONE);
                     setBrowserContentTopOffset(false);
+                    showFloatingSearchButton();
+                } else {
+                    hideFloatingSearchButton();
                 }
                 scrollAccumulator = 0f;
                 scrollDirection = 0;
@@ -3024,10 +3177,6 @@ public class MainActivity extends Activity {
         if (addressField != null && addressField.hasFocus()) {
             hideKeyboard();
             addressField.clearFocus();
-            return;
-        }
-        if (addressBarHidden) {
-            animateAddressBar(true);
             return;
         }
         if (activeTab != null && activeTab.canGoBack) {
