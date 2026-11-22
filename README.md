@@ -4,23 +4,25 @@ AstroWeb is a minimalist Android browser powered by Mozilla GeckoView.
 
 ## Current version
 
-- Version: **0.17**
+- Version: **0.18**
 - Android application, built with Java 17 and Gradle
 - GeckoView 160
 - Architecture-specific debug APKs for ARM64 and ARMv7
 
 ## Browser features
 
-- Multi-tab browsing with top-aligned page previews
+- Multi-tab browsing with on-demand viewport previews to reduce memory use
 - Floating compact search control with an animated expansion into the address bar
-- Address suggestions grouped by global trends, previous searches, related searches, bookmarks and visited pages
-- Personalized search history stored locally on the device
+- Address suggestions grouped by global trends, typo-tolerant previous searches, related searches, bookmarks and visited pages
+- Personalized search history stored locally on the device as soon as a search is started
 - Global discovery trends gathered from Google Trends feeds for Mexico, the United States, Spain, Brazil and Japan
-- Private tabs do not save personalized searches
+- Address suggestions update after a short typing pause; private tabs do not save personalized searches
 - Bookmarks and browsing history
 - PDF export and saved-downloads list
 - Site permission prompts and per-site permission preferences
 - Mobile and desktop display modes
+- Manual tab recovery after a browser content-process stop, preventing silent automatic reloads
+- Lightweight local start page with nonessential entrance animations removed
 - Find in page and browser navigation controls
 
 ## Privacy and recommendations
