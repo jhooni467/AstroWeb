@@ -58,7 +58,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** AstroWeb 0.09 — fluid address bar, suggestions and essential browser tools. */
+/** AstroWeb 0.11 — reliable tab closing and refreshed tab overview. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final String HOME_URL = "resource://android/assets/home.html";
@@ -1154,23 +1154,27 @@ public class MainActivity extends Activity {
             previewFrame.addView(activeTag, tagParams);
         }
 
-        TextView close = new TextView(this);
-        close.setText("×");
-        close.setTextSize(19);
-        close.setTextColor(Color.WHITE);
-        close.setGravity(Gravity.CENTER);
+        ImageButton close = new ImageButton(this);
+        close.setImageResource(R.drawable.ic_close);
+        close.setImageTintList(ColorStateList.valueOf(Color.WHITE));
+        close.setScaleType(ImageView.ScaleType.CENTER);
+        close.setPadding(dp(8), dp(8), dp(8), dp(8));
         GradientDrawable closeBg = new GradientDrawable();
         closeBg.setColor(Color.rgb(25, 29, 26));
-        closeBg.setCornerRadius(dp(14));
+        closeBg.setCornerRadius(dp(12));
         close.setBackground(closeBg);
         close.setContentDescription("Cerrar pestaña");
+        close.setClickable(true);
+        close.setFocusable(true);
+        close.setElevation(dp(14));
         applySoftRipple(close);
-        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(28), dp(28),
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(36), dp(36),
                 Gravity.TOP | Gravity.END);
         closeParams.topMargin = dp(7);
         closeParams.rightMargin = dp(7);
-        previewFrame.addView(close, closeParams);
         close.setOnClickListener(v -> closeTabFromOverview(tab, overviewDialog));
+        previewFrame.addView(close, closeParams);
+        close.bringToFront();
 
         card.addView(previewFrame, new LinearLayout.LayoutParams(-1, dp(210)));
 
@@ -1227,34 +1231,44 @@ public class MainActivity extends Activity {
 
     private void closeTabFromOverview(BrowserTab tab, Dialog overviewDialog) {
         if (tab == null || !tabs.contains(tab)) return;
+
         if (tabs.size() == 1) {
             tab.thumbnail = null;
             tab.title = "Nueva pestaña";
             restartTab(tab, HOME_URL);
+            updateTabCounter();
             overviewDialog.dismiss();
-            showTabsDialog();
+            showTabsOverview();
             return;
         }
 
         int oldIndex = tabs.indexOf(tab);
         boolean wasActive = tab == activeTab;
         tabs.remove(tab);
+
         GeckoSession old = tab.session;
         tab.session = null;
         tab.thumbnail = null;
         if (old != null) {
-            try { old.close(); }
-            catch (RuntimeException error) { Log.w(TAG, "Tab close failed", error); }
+            try {
+                old.close();
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Tab close failed", error);
+            }
         }
 
         if (wasActive) {
             activeTab = null;
-            BrowserTab next = tabs.get(Math.max(0, Math.min(oldIndex, tabs.size() - 1)));
-            activateTab(next);
+            int nextIndex = Math.min(oldIndex, tabs.size() - 1);
+            activateTab(tabs.get(Math.max(0, nextIndex)));
         }
+
         updateTabCounter();
         overviewDialog.dismiss();
-        showTabsDialog();
+
+        // Refresh the existing overview directly. Do not recapture the active page here:
+        // the tab list has already changed and a second asynchronous capture can race the UI.
+        showTabsOverview();
     }
 
     private String shorten(String value, int max) {
