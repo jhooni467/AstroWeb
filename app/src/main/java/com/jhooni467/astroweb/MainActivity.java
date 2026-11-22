@@ -867,6 +867,31 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        if (activeTab != null && activeTab.session != null) {
+            try {
+                activeTab.session.flushSessionState();
+                activeTab.session.setActive(false);
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Could not pause browser session cleanly", error);
+            }
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (activeTab != null && activeTab.session != null) {
+            try {
+                activeTab.session.setActive(true);
+            } catch (RuntimeException error) {
+                Log.w(TAG, "Could not resume browser session cleanly", error);
+            }
+        }
+    }
+
+    @Override
     public void onBackPressed() {
         if (activeTab != null && activeTab.canGoBack) {
             goBack();
