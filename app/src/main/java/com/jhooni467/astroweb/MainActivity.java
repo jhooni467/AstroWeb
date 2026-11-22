@@ -499,6 +499,19 @@ public class MainActivity extends Activity {
                     R.drawable.ic_search));
         }
 
+        List<JSONObject> trends = getGlobalTrendSuggestions(query, 5);
+        if (!trends.isEmpty()) {
+            String section = query.isEmpty()
+                    ? "TENDENCIAS EN VARIOS PAÍSES" : "TENDENCIAS RELACIONADAS";
+            for (JSONObject trend : trends) {
+                String title = trend.optString("title", "").trim();
+                if (title.isEmpty()) continue;
+                suggestions.add(new AddressSuggestion(title,
+                        trendCountrySubtitle(trend),
+                        null, section, title, R.drawable.ic_search));
+            }
+        }
+
         // Private tabs may use public trends, but never reveal personal search memory.
         List<SearchMemory> personal = activeTab != null && !activeTab.privateMode
                 ? getPersonalSearchSuggestions(query, 4) : new ArrayList<>();
@@ -511,19 +524,6 @@ public class MainActivity extends Activity {
                                 ? "Búsqueda anterior · " + savedSearch.count + " usos"
                                 : "Relacionada con tu actividad",
                         null, section, savedSearch.query, R.drawable.ic_history));
-            }
-        }
-
-        List<JSONObject> trends = getGlobalTrendSuggestions(query, 5);
-        if (!trends.isEmpty()) {
-            String section = query.isEmpty()
-                    ? "TENDENCIAS EN VARIOS PAÍSES" : "TENDENCIAS RELACIONADAS";
-            for (JSONObject trend : trends) {
-                String title = trend.optString("title", "").trim();
-                if (title.isEmpty()) continue;
-                suggestions.add(new AddressSuggestion(title,
-                        trendCountrySubtitle(trend),
-                        null, section, title, R.drawable.ic_search));
             }
         }
 
@@ -3105,7 +3105,28 @@ public class MainActivity extends Activity {
     private void showHistoryDialog() {
         String existing = storage.getString("history", "");
         if (existing.isEmpty()) {
-            Toast.makeText(this, "El historial está vacío", Toast.LENGTH_SHORT).show();
+            List<SearchMemory> searches = getPersonalSearchSuggestions("", 40);
+            if (searches.isEmpty()) {
+                Toast.makeText(this, "El historial está vacío", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            List<String> labels = new ArrayList<>();
+            List<String> subtitles = new ArrayList<>();
+            List<Integer> icons = new ArrayList<>();
+            List<Runnable> actions = new ArrayList<>();
+            for (SearchMemory search : searches) {
+                labels.add(search.query);
+                subtitles.add("Búsqueda guardada · " + search.count + " usos");
+                icons.add(R.drawable.ic_search);
+                actions.add(() -> navigate(
+                        "https://www.google.com/search?q=" + Uri.encode(search.query)));
+            }
+            showBottomSheet("Tus búsquedas", labels, subtitles, icons, actions,
+                    null, null, "Borrar búsquedas", () -> {
+                        storage.edit().remove("search_queries").apply();
+                        Toast.makeText(this, "Búsquedas borradas",
+                                Toast.LENGTH_SHORT).show();
+                    });
             return;
         }
         List<String> entries = new ArrayList<>();
