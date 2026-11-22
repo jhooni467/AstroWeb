@@ -2410,20 +2410,27 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // Capture immutable animation endpoints for Java lambda compatibility.
+        final float animationFromY = fromY;
+        final float animationToY = toY;
+        final float animationFromAlpha = fromAlpha;
+        final float animationToAlpha = toAlpha;
+
         ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
         addressAnimator = animator;
         animator.setDuration(show ? 230 : 190);
         animator.setInterpolator(new DecelerateInterpolator(1.35f));
         animator.addUpdateListener(value -> {
             float t = (float) value.getAnimatedValue();
-            chrome.setTranslationY(fromY + (toY - fromY) * t);
-            chrome.setAlpha(fromAlpha + (toAlpha - fromAlpha) * t);
+            chrome.setTranslationY(animationFromY + (animationToY - animationFromY) * t);
+            chrome.setAlpha(animationFromAlpha
+                    + (animationToAlpha - animationFromAlpha) * t);
         });
         animator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (token != addressAnimationToken) return;
-                chrome.setTranslationY(toY);
-                chrome.setAlpha(toAlpha);
+                chrome.setTranslationY(animationToY);
+                chrome.setAlpha(animationToAlpha);
                 if (!show) {
                     chrome.setVisibility(View.GONE);
                     setBrowserContentTopOffset(false);
