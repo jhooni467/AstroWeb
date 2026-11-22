@@ -3,41 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#090a17">
-<title>AstroWeb</title>
+<meta name="theme-color" content="#101117">
+<title>Nueva pestaña</title>
 <style>
-:root{color-scheme:dark;--text:#f4f1ff;--muted:#9997b5;--accent:#b19fff;--line:rgba(177,159,255,.19)}
+:root{color-scheme:dark;--text:#eeeeF4;--muted:#a0a1ad;--line:#30313b;--accent:#bcaeff}
 *{box-sizing:border-box}
-html,body{margin:0;min-height:100%;background:#090a17}
-body{min-height:100vh;padding:clamp(34px,9vh,76px) 25px 35px;color:var(--text);font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(ellipse at 50% 0%,rgba(105,83,185,.18),transparent 48%),#090a17}
-main{width:min(100%,560px);margin:0 auto}
-.kicker{font-size:10px;letter-spacing:.22em;color:var(--accent);font-weight:700}
-h1{font-size:clamp(32px,8vw,46px);line-height:1.08;letter-spacing:-.055em;font-weight:650;margin:17px 0 12px}
-.intro{font-size:14px;line-height:1.7;color:var(--muted);max-width:360px;margin:0}
-.rule{height:1px;background:var(--line);margin:34px 0 22px}
-.section{font-size:10px;letter-spacing:.2em;color:var(--muted);margin:0 0 9px}
-.links{display:grid;grid-template-columns:1fr 1fr;column-gap:28px}
-a{min-height:62px;display:flex;align-items:center;gap:12px;color:var(--text);text-decoration:none;border-bottom:1px solid rgba(177,159,255,.11);font-size:13px}
+html,body{margin:0;min-height:100%;background:#101117}
+body{min-height:100vh;color:var(--text);font-family:system-ui,-apple-system,Roboto,sans-serif;padding:22px 18px}
+main{width:100%;max-width:760px;margin:0 auto}
+h1{font-size:13px;line-height:1.4;font-weight:600;color:var(--muted);margin:0 0 12px}
+.sites{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:26px}
+a{min-width:0;min-height:48px;display:flex;align-items:center;gap:12px;color:var(--text);text-decoration:none;border-bottom:1px solid var(--line);font-size:14px}
 a:active{color:var(--accent)}
-.symbol{width:25px;color:var(--accent);font-size:15px;font-weight:700;text-align:center}
-.note{margin-top:34px;color:rgba(153,151,181,.7);font-size:11px;line-height:1.6}
-@media(max-width:370px){.links{grid-template-columns:1fr}}
+.symbol{display:flex;align-items:center;justify-content:center;width:22px;height:22px;flex:0 0 22px;color:var(--accent);font-size:15px;font-weight:600}
+@media(min-width:600px){.sites{grid-template-columns:repeat(4,minmax(0,1fr))}}
 </style>
 </head>
 <body>
 <main>
-<div class="kicker">YOUR SPACE TO EXPLORE</div>
-<h1>Where will<br>you go today?</h1>
-<p class="intro">Search the web, follow your curiosity and discover something beyond the ordinary.</p>
-<div class="rule"></div>
-<div class="section">QUICK ACCESS</div>
-<nav class="links" aria-label="Quick access">
+<h1>Accesos directos</h1>
+<nav class="sites" aria-label="Sitios frecuentes">
 <a href="https://www.google.com/"><span class="symbol">G</span><span>Google</span></a>
-<a href="https://www.wikipedia.org/"><span class="symbol">W</span><span>Wikipedia</span></a>
 <a href="https://www.youtube.com/"><span class="symbol">▶</span><span>YouTube</span></a>
+<a href="https://www.wikipedia.org/"><span class="symbol">W</span><span>Wikipedia</span></a>
 <a href="https://github.com/"><span class="symbol">⌘</span><span>GitHub</span></a>
 </nav>
-<p class="note">Enter a website or search term in the address bar to get started.</p>
 </main>
 </body>
 </html>
