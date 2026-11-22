@@ -137,7 +137,7 @@ public class MainActivity extends Activity {
         tabCounter.setText("1");
         tabCounter.setTextSize(12);
         tabCounter.setTextColor(TEXT);
-        tabCounter.setTypeface(Typeface.DEFAULT, Typeface.MEDIUM);
+        tabCounter.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         tabCounter.setGravity(Gravity.CENTER);
         GradientDrawable tabShape = new GradientDrawable();
         tabShape.setColor(Color.TRANSPARENT);
@@ -152,8 +152,8 @@ public class MainActivity extends Activity {
         tabCounterParams.rightMargin = dp(5);
         addressRow.addView(tabCounter, tabCounterParams);
 
-        ImageButton menu = iconButton(R.drawable.ic_more, "Menú del navegador",
-                () -> showBrowserMenu(menuAnchor()));
+        ImageButton menu = iconButton(R.drawable.ic_more, "Menú del navegador", () -> {});
+        menu.setOnClickListener(v -> showBrowserMenu(v));
         addressRow.addView(menu, new LinearLayout.LayoutParams(dp(39), dp(48)));
 
         View addressDivider = new View(this);
