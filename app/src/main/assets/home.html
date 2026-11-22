@@ -1,112 +1,43 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#080a19">
-  <title>AstroWeb</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --ink: #f6f3ff;
-      --muted: #aaa8c7;
-      --violet: #b2a1ff;
-      --glass: rgba(255,255,255,.055);
-      --line: rgba(190,178,255,.16);
-    }
-    * { box-sizing: border-box; }
-    html, body { min-height: 100%; margin: 0; }
-    body {
-      min-height: 100vh;
-      overflow-x: hidden;
-      color: var(--ink);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background:
-        radial-gradient(ellipse at 50% 12%, rgba(112,88,211,.22), transparent 43%),
-        radial-gradient(ellipse at 0% 100%, rgba(54,103,160,.15), transparent 40%),
-        linear-gradient(155deg, #080a19 0%, #101027 58%, #090b1c 100%);
-      padding: clamp(24px, 7vh, 62px) 22px 28px;
-    }
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      background-image:
-        radial-gradient(1px 1px at 12% 18%, #fff 98%, transparent),
-        radial-gradient(1px 1px at 77% 13%, #ded5ff 98%, transparent),
-        radial-gradient(1px 1px at 84% 65%, #fff 98%, transparent),
-        radial-gradient(1.5px 1.5px at 26% 78%, #ded5ff 98%, transparent),
-        radial-gradient(1px 1px at 61% 88%, #fff 98%, transparent),
-        radial-gradient(1px 1px at 45% 29%, #fff 98%, transparent);
-      opacity: .38;
-      animation: shimmer 10s ease-in-out infinite alternate;
-    }
-    @keyframes shimmer { from { opacity: .18; } to { opacity: .43; } }
-    main { width: min(100%, 590px); margin: 0 auto; position: relative; z-index: 1; }
-    .topline { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:10px; letter-spacing:.2em; }
-    .spark { color:var(--violet); font-size:18px; }
-    .hero { padding: clamp(28px, 7vh, 62px) 0 26px; }
-    .orb {
-      width: 66px; height: 66px; margin-bottom: 22px; border-radius: 23px;
-      display:grid; place-items:center; font-size:29px; color:#eee9ff;
-      background: radial-gradient(circle at 32% 25%, #7569ad, #302b60 62%, #17172e 100%);
-      border:1px solid rgba(220,211,255,.2);
-      box-shadow:0 14px 45px rgba(137,117,255,.17), inset 0 1px 12px rgba(255,255,255,.14);
-    }
-    .eyebrow { color:var(--violet); font-size:10px; letter-spacing:.24em; font-weight:700; }
-    h1 { font-size:clamp(35px, 10vw, 54px); line-height:1.02; letter-spacing:-.06em; margin:13px 0 12px; font-weight:680; }
-    .tagline { max-width:330px; color:var(--muted); font-size:14px; line-height:1.65; margin:0; }
-    .divider { height:1px; margin:25px 0 21px; background:linear-gradient(90deg, rgba(177,160,255,.5), transparent); }
-    .section-head { display:flex; align-items:center; justify-content:space-between; margin:0 0 13px; }
-    .section-label { color:var(--muted); font-size:10px; letter-spacing:.19em; }
-    .section-note { color:rgba(170,168,199,.55); font-size:10px; }
-    .links { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
-    a {
-      min-height:74px; display:flex; align-items:center; gap:12px;
-      text-decoration:none; color:var(--ink); text-align:left;
-      padding:14px; border-radius:19px;
-      background:var(--glass); border:1px solid var(--line);
-      -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px);
-      transition:transform .2s ease, background .2s ease, border-color .2s ease;
-    }
-    a:active { transform:scale(.97); background:rgba(177,160,255,.13); }
-    .symbol { width:34px; height:34px; flex:0 0 34px; border-radius:12px; display:grid; place-items:center; color:#ded6ff; background:rgba(177,160,255,.13); font-size:15px; font-weight:700; }
-    .name { display:block; font-size:13px; font-weight:650; }
-    .hint { display:block; color:var(--muted); font-size:10px; margin-top:4px; }
-    .discover { margin-top:25px; padding:17px 18px; border-radius:19px; background:linear-gradient(125deg, rgba(118,99,198,.17), rgba(255,255,255,.025)); border:1px solid var(--line); }
-    .discover strong { display:block; font-size:12px; margin-bottom:5px; }
-    .discover p { color:var(--muted); font-size:11px; line-height:1.55; margin:0; }
-    footer { margin-top:30px; color:rgba(170,168,199,.48); font-size:9px; letter-spacing:.18em; text-align:center; }
-    @media (min-width:520px) { .links { grid-template-columns:repeat(4,minmax(0,1fr)); } a { flex-direction:column; justify-content:center; min-height:104px; gap:8px; text-align:center; } }
-    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#090a17">
+<title>AstroWeb</title>
+<style>
+:root{color-scheme:dark;--text:#f4f1ff;--muted:#9997b5;--accent:#b19fff;--line:rgba(177,159,255,.19)}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:#090a17}
+body{min-height:100vh;padding:clamp(34px,9vh,76px) 25px 35px;color:var(--text);font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(ellipse at 50% 0%,rgba(105,83,185,.18),transparent 48%),#090a17}
+main{width:min(100%,560px);margin:0 auto}
+.kicker{font-size:10px;letter-spacing:.22em;color:var(--accent);font-weight:700}
+h1{font-size:clamp(32px,8vw,46px);line-height:1.08;letter-spacing:-.055em;font-weight:650;margin:17px 0 12px}
+.intro{font-size:14px;line-height:1.7;color:var(--muted);max-width:360px;margin:0}
+.rule{height:1px;background:var(--line);margin:34px 0 22px}
+.section{font-size:10px;letter-spacing:.2em;color:var(--muted);margin:0 0 9px}
+.links{display:grid;grid-template-columns:1fr 1fr;column-gap:28px}
+a{min-height:62px;display:flex;align-items:center;gap:12px;color:var(--text);text-decoration:none;border-bottom:1px solid rgba(177,159,255,.11);font-size:13px}
+a:active{color:var(--accent)}
+.symbol{width:25px;color:var(--accent);font-size:15px;font-weight:700;text-align:center}
+.note{margin-top:34px;color:rgba(153,151,181,.7);font-size:11px;line-height:1.6}
+@media(max-width:370px){.links{grid-template-columns:1fr}}
+</style>
 </head>
 <body>
-  <main>
-    <div class="topline"><span class="spark">✦</span><span>ASTROWEB · YOUR SPACE TO EXPLORE</span></div>
-    <section class="hero">
-      <div class="orb" aria-hidden="true">✦</div>
-      <div class="eyebrow">EXPLORE BEYOND THE ORDINARY</div>
-      <h1>Beyond<br>the search.</h1>
-      <p class="tagline">A calmer window to the web. Follow a thought, discover something new, and see where it takes you.</p>
-    </section>
-    <div class="divider"></div>
-    <div class="section-head">
-      <span class="section-label">QUICK ACCESS</span>
-      <span class="section-note">YOUR STARTING POINT</span>
-    </div>
-    <nav class="links" aria-label="Quick access">
-      <a href="https://www.google.com/"><span class="symbol">G</span><span><span class="name">Google</span><span class="hint">Search the web</span></span></a>
-      <a href="https://www.wikipedia.org/"><span class="symbol">W</span><span><span class="name">Wikipedia</span><span class="hint">Explore knowledge</span></span></a>
-      <a href="https://www.youtube.com/"><span class="symbol">▶</span><span><span class="name">YouTube</span><span class="hint">Watch and discover</span></span></a>
-      <a href="https://github.com/"><span class="symbol">⌘</span><span><span class="name">GitHub</span><span class="hint">Create and build</span></span></a>
-    </nav>
-    <section class="discover">
-      <strong>A universe of possibilities.</strong>
-      <p>Type a website or a question in the address bar above to begin your next journey.</p>
-    </section>
-    <footer>ASTROWEB · VERSION 0.02</footer>
-  </main>
+<main>
+<div class="kicker">YOUR SPACE TO EXPLORE</div>
+<h1>Where will<br>you go today?</h1>
+<p class="intro">Search the web, follow your curiosity and discover something beyond the ordinary.</p>
+<div class="rule"></div>
+<div class="section">QUICK ACCESS</div>
+<nav class="links" aria-label="Quick access">
+<a href="https://www.google.com/"><span class="symbol">G</span><span>Google</span></a>
+<a href="https://www.wikipedia.org/"><span class="symbol">W</span><span>Wikipedia</span></a>
+<a href="https://www.youtube.com/"><span class="symbol">▶</span><span>YouTube</span></a>
+<a href="https://github.com/"><span class="symbol">⌘</span><span>GitHub</span></a>
+</nav>
+<p class="note">Enter a website or search term in the address bar to get started.</p>
+</main>
 </body>
 </html>
