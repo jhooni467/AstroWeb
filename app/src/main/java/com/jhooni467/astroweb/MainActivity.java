@@ -181,6 +181,7 @@ public class MainActivity extends Activity {
     private void openBrowser() {
         AstroWebApplication app = (AstroWebApplication) getApplication();
         session = new GeckoSession();
+        session.setContentDelegate(new GeckoSession.ContentDelegate() {});
         session.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
             @Override
             public void onLocationChange(
