@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build AstroWeb debug APK
+    name: Build AstroWeb APKs
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -34,12 +34,12 @@ jobs:
         with:
           packages: "platforms;android-37.2 build-tools;37.0.0"
 
-      - name: Build debug APK
+      - name: Build ABI-specific debug APKs
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Upload debug APK
+      - name: Upload architecture-specific APKs
         uses: actions/upload-artifact@v4
         with:
-          name: AstroWeb-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: AstroWeb-0.02-APKs
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
