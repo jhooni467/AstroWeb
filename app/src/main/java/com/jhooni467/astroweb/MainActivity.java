@@ -11,6 +11,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -25,6 +27,7 @@ import android.os.Parcel;
 import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -37,6 +40,7 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -44,6 +48,7 @@ import android.widget.Toast;
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
 import org.mozilla.geckoview.GeckoSession;
+import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebRequestError;
 
@@ -53,7 +58,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** AstroWeb 0.06 — adaptive browser chrome and persistent Gecko sessions. */
+/** AstroWeb 0.09 — fluid address bar, suggestions and essential browser tools. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final String HOME_URL = "resource://android/assets/home.html";
@@ -68,10 +73,16 @@ public class MainActivity extends Activity {
     private final List<BrowserTab> tabs = new ArrayList<>();
 
     private GeckoView geckoView;
+    private FrameLayout browserRoot;
     private EditText addressField;
     private TextView tabCounter;
     private LinearLayout addressRow;
+    private LinearLayout topChrome;
     private View addressDivider;
+    private ProgressBar pageProgress;
+    private ImageButton clearAddressButton;
+    private PopupWindow suggestionPopup;
+    private TextWatcher addressWatcher;
     private ValueAnimator addressAnimator;
     private int addressAnimationToken = 0;
     private int lastScrollY = 0;
@@ -94,6 +105,8 @@ public class MainActivity extends Activity {
         String title = "Nueva pestaña";
         String serializedState;
         Bitmap thumbnail;
+        boolean privateMode;
+        boolean desktopMode;
         boolean canGoBack;
         boolean canGoForward;
     }
@@ -111,55 +124,19 @@ public class MainActivity extends Activity {
     }
 
     private void buildInterface() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BG);
-        root.setPadding(0, 0, 0, 0);
-
-        // AstroWeb draws edge-to-edge on modern Android, but keeps browser controls
-        // below the status bar and above the system navigation area.
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
+        browserRoot = new FrameLayout(this);
+        browserRoot.setBackgroundColor(BG);
+        browserRoot.setClipChildren(true);
+        browserRoot.setClipToPadding(true);
+        browserRoot.setOnApplyWindowInsetsListener((view, insets) -> {
             view.setPadding(0, insets.getSystemWindowInsetTop(),
                     0, insets.getSystemWindowInsetBottom());
             return insets;
         });
 
-        addressRow = new LinearLayout(this);
-        addressRow.setOrientation(LinearLayout.HORIZONTAL);
-        addressRow.setGravity(Gravity.CENTER_VERTICAL);
-        addressRow.setBackgroundColor(BAR);
-
-        ImageButton searchIcon = iconButton(R.drawable.ic_search, "Buscar", this::focusAddress);
-        addressRow.addView(searchIcon, new LinearLayout.LayoutParams(dp(38), dp(48)));
-
-        addressField = new EditText(this);
-        addressField.setSingleLine(true);
-        addressField.setTextSize(14);
-        addressField.setTextColor(TEXT);
-        addressField.setHintTextColor(MUTED);
-        addressField.setHint("Buscar o escribir dirección");
-        addressField.setImeOptions(EditorInfo.IME_ACTION_GO);
-        addressField.setInputType(android.text.InputType.TYPE_CLASS_TEXT
-                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-        addressField.setBackgroundColor(Color.TRANSPARENT);
-        addressField.setPadding(dp(3), 0, dp(4), 0);
-        addressField.setSelectAllOnFocus(false);
-        addressField.setOnEditorActionListener((view, action, event) -> {
-            if (action == EditorInfo.IME_ACTION_GO || action == EditorInfo.IME_ACTION_DONE) {
-                navigate(addressField.getText().toString());
-                return true;
-            }
-            return false;
-        });
-        addressRow.addView(addressField, new LinearLayout.LayoutParams(0, dp(48), 1f));
-
-
-
-        addressDivider = new View(this);
-        addressDivider.setBackgroundColor(DIVIDER);
-
         geckoView = new GeckoView(this);
         geckoView.setBackgroundColor(BG);
+        geckoView.setVerticalClipping(dp(50));
 
         FrameLayout browserFrame = new FrameLayout(this);
         browserFrame.setBackgroundColor(BG);
@@ -202,10 +179,109 @@ public class MainActivity extends Activity {
             restartTab(activeTab, activeTab == null ? HOME_URL : activeTab.url);
         });
         failureContent.addView(retry);
-
         failureOverlay.addView(failureContent,
                 new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         browserFrame.addView(failureOverlay, new FrameLayout.LayoutParams(-1, -1));
+
+        browserRoot.addView(browserFrame, new FrameLayout.LayoutParams(-1, -1));
+
+        topChrome = new LinearLayout(this);
+        topChrome.setOrientation(LinearLayout.VERTICAL);
+        topChrome.setPadding(0, dp(4), 0, 0);
+        topChrome.setBackgroundColor(BAR);
+        topChrome.setElevation(dp(12));
+
+        addressRow = new LinearLayout(this);
+        addressRow.setOrientation(LinearLayout.HORIZONTAL);
+        addressRow.setGravity(Gravity.CENTER_VERTICAL);
+        addressRow.setPadding(dp(7), 0, dp(5), 0);
+        GradientDrawable addressSurface = new GradientDrawable();
+        addressSurface.setColor(Color.rgb(36, 43, 37));
+        addressSurface.setCornerRadius(dp(13));
+        addressSurface.setStroke(dp(1), Color.rgb(56, 67, 57));
+        addressRow.setBackground(addressSurface);
+
+        ImageButton searchIcon = iconButton(R.drawable.ic_search, "Buscar", this::focusAddress);
+        searchIcon.setImageTintList(ColorStateList.valueOf(MUTED));
+        addressRow.addView(searchIcon, new LinearLayout.LayoutParams(dp(36), dp(42)));
+
+        addressField = new EditText(this);
+        addressField.setSingleLine(true);
+        addressField.setTextSize(14);
+        addressField.setTextColor(TEXT);
+        addressField.setHintTextColor(MUTED);
+        addressField.setHint("Buscar o escribir dirección");
+        addressField.setImeOptions(EditorInfo.IME_ACTION_GO);
+        addressField.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        addressField.setBackgroundColor(Color.TRANSPARENT);
+        addressField.setPadding(dp(4), 0, dp(2), 0);
+        addressField.setSelectAllOnFocus(false);
+        addressField.setOnEditorActionListener((view, action, event) -> {
+            if (action == EditorInfo.IME_ACTION_GO || action == EditorInfo.IME_ACTION_DONE
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN)) {
+                navigate(addressField.getText().toString());
+                return true;
+            }
+            return false;
+        });
+        addressField.setOnFocusChangeListener((view, hasFocus) -> {
+            if (hasFocus) {
+                animateAddressBar(true);
+                showAddressSuggestions(addressField.getText().toString());
+            } else {
+                dismissAddressSuggestions();
+            }
+        });
+        addressRow.addView(addressField, new LinearLayout.LayoutParams(0, dp(42), 1f));
+
+        clearAddressButton = iconButton(R.drawable.ic_close, "Borrar texto", () -> {
+            addressField.setText("");
+            addressField.requestFocus();
+            InputMethodManager manager =
+                    (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (manager != null) manager.showSoftInput(addressField,
+                    InputMethodManager.SHOW_IMPLICIT);
+        });
+        clearAddressButton.setImageTintList(ColorStateList.valueOf(MUTED));
+        clearAddressButton.setVisibility(View.GONE);
+        addressRow.addView(clearAddressButton, new LinearLayout.LayoutParams(dp(34), dp(42)));
+
+        addressWatcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence text, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable text) {
+                boolean hasText = text != null && text.length() > 0;
+                clearAddressButton.setVisibility(hasText ? View.VISIBLE : View.GONE);
+                if (addressField.hasFocus()) {
+                    showAddressSuggestions(text == null ? "" : text.toString());
+                }
+            }
+        };
+        addressField.addTextChangedListener(addressWatcher);
+
+        LinearLayout.LayoutParams addressParams = new LinearLayout.LayoutParams(-1, dp(44));
+        addressParams.leftMargin = dp(9);
+        addressParams.rightMargin = dp(9);
+        addressParams.bottomMargin = dp(4);
+        topChrome.addView(addressRow, addressParams);
+
+        addressDivider = new View(this);
+        addressDivider.setBackgroundColor(DIVIDER);
+        topChrome.addView(addressDivider, new LinearLayout.LayoutParams(-1, dp(1)));
+
+        pageProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pageProgress.setMax(100);
+        pageProgress.setProgress(0);
+        pageProgress.setProgressTintList(ColorStateList.valueOf(ACCENT));
+        pageProgress.setProgressBackgroundTintList(
+                ColorStateList.valueOf(Color.rgb(35, 43, 36)));
+        pageProgress.setVisibility(View.INVISIBLE);
+        topChrome.addView(pageProgress, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        browserRoot.addView(topChrome,
+                new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
 
         View bottomDivider = new View(this);
         bottomDivider.setBackgroundColor(DIVIDER);
@@ -214,6 +290,7 @@ public class MainActivity extends Activity {
         bottomBar.setOrientation(LinearLayout.HORIZONTAL);
         bottomBar.setGravity(Gravity.CENTER);
         bottomBar.setBackgroundColor(BAR);
+        bottomBar.setElevation(dp(10));
 
         ImageButton home = bottomButton(R.drawable.ic_home, "Inicio", this::loadHome);
         bookmarkButton = bottomButton(R.drawable.ic_bookmark, "Marcadores", this::toggleBookmark);
@@ -228,17 +305,18 @@ public class MainActivity extends Activity {
         addWeighted(bottomBar, tabs);
         addWeighted(bottomBar, menu);
 
-        root.addView(addressRow, new LinearLayout.LayoutParams(-1, dp(50)));
-        root.addView(addressDivider, new LinearLayout.LayoutParams(-1, dp(1)));
-        root.addView(browserFrame, new LinearLayout.LayoutParams(-1, 0, 1f));
-        root.addView(bottomDivider, new LinearLayout.LayoutParams(-1, dp(1)));
-        root.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(49)));
+        LinearLayout bottomChrome = new LinearLayout(this);
+        bottomChrome.setOrientation(LinearLayout.VERTICAL);
+        bottomChrome.addView(bottomDivider, new LinearLayout.LayoutParams(-1, dp(1)));
+        bottomChrome.addView(bottomBar, new LinearLayout.LayoutParams(-1, dp(49)));
+        browserRoot.addView(bottomChrome,
+                new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
-        setContentView(root);
+        setContentView(browserRoot);
         updateNavigationButtons();
         updateTabCounter();
         updateBookmarkButton();
-        root.requestApplyInsets();
+        browserRoot.requestApplyInsets();
     }
 
     private View menuAnchor() {
@@ -278,15 +356,164 @@ public class MainActivity extends Activity {
     private void focusAddress() {
         animateAddressBar(true);
         addressField.requestFocus();
-        addressField.setSelection(addressField.getText().length());
+        addressField.setSelection(0, addressField.getText().length());
         InputMethodManager manager =
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (manager != null) manager.showSoftInput(addressField, InputMethodManager.SHOW_IMPLICIT);
+        if (manager != null) manager.showSoftInput(addressField,
+                InputMethodManager.SHOW_IMPLICIT);
+        showAddressSuggestions(addressField.getText().toString());
+    }
+
+    private void dismissAddressSuggestions() {
+        if (suggestionPopup != null) {
+            suggestionPopup.dismiss();
+            suggestionPopup = null;
+        }
+    }
+
+    private static class AddressSuggestion {
+        final String title, subtitle, url;
+        final int icon;
+        final boolean search;
+
+        AddressSuggestion(String title, String subtitle, String url, int icon, boolean search) {
+            this.title = title;
+            this.subtitle = subtitle;
+            this.url = url;
+            this.icon = icon;
+            this.search = search;
+        }
+    }
+
+    private void showAddressSuggestions(String rawQuery) {
+        if (addressField == null || !addressField.hasFocus() || browserRoot == null) return;
+        dismissAddressSuggestions();
+
+        String query = rawQuery == null ? "" : rawQuery.trim();
+        String lower = query.toLowerCase(java.util.Locale.ROOT);
+        List<AddressSuggestion> suggestions = new ArrayList<>();
+        if (!query.isEmpty()) {
+            suggestions.add(new AddressSuggestion("Buscar \"" + shorten(query, 32) + "\"",
+                    "Buscar en Google", null, R.drawable.ic_search, true));
+        }
+
+        Set<String> unique = new HashSet<>();
+        List<String> saved = new ArrayList<>(
+                storage.getStringSet("bookmarks", new HashSet<>()));
+        Collections.reverse(saved);
+        List<String> recent = new ArrayList<>();
+        String history = storage.getString("history", "");
+        if (!history.isEmpty()) {
+            for (String item : history.split("\\n")) {
+                if (!item.isEmpty()) recent.add(item);
+            }
+        }
+
+        List<String> candidates = new ArrayList<>();
+        candidates.addAll(saved);
+        candidates.addAll(recent);
+        for (String url : candidates) {
+            if (!unique.add(url)) continue;
+            String host = getTabHost(url);
+            String match = (host + " " + url).toLowerCase(java.util.Locale.ROOT);
+            if (!query.isEmpty() && !match.contains(lower)) continue;
+            boolean isBookmark = saved.contains(url);
+            suggestions.add(new AddressSuggestion(host,
+                    isBookmark ? "Marcador guardado" : "Visitado recientemente",
+                    url, isBookmark ? R.drawable.ic_bookmark : R.drawable.ic_history, false));
+            if (suggestions.size() >= 5) break;
+        }
+        if (suggestions.isEmpty()) return;
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(8), dp(7), dp(8), dp(7));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(30, 37, 31));
+        background.setCornerRadius(dp(15));
+        background.setStroke(dp(1), Color.rgb(57, 68, 58));
+        panel.setBackground(background);
+
+        TextView heading = new TextView(this);
+        heading.setText(query.isEmpty() ? "VISITAS RECIENTES" : "SUGERENCIAS");
+        heading.setTextColor(MUTED);
+        heading.setTextSize(9);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setLetterSpacing(.12f);
+        heading.setPadding(dp(11), dp(5), dp(11), dp(7));
+        panel.addView(heading);
+
+        for (AddressSuggestion suggestion : suggestions) {
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.HORIZONTAL);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setPadding(dp(10), dp(6), dp(10), dp(6));
+            applySoftRipple(item);
+
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(suggestion.icon);
+            icon.setImageTintList(ColorStateList.valueOf(ACCENT));
+            icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            LinearLayout.LayoutParams iconParams =
+                    new LinearLayout.LayoutParams(dp(21), dp(21));
+            iconParams.rightMargin = dp(12);
+            item.addView(icon, iconParams);
+
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            TextView title = new TextView(this);
+            title.setText(suggestion.title);
+            title.setTextColor(TEXT);
+            title.setTextSize(13);
+            title.setSingleLine(true);
+            title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            labels.addView(title);
+
+            TextView subtitle = new TextView(this);
+            subtitle.setText(suggestion.subtitle);
+            subtitle.setTextColor(MUTED);
+            subtitle.setTextSize(10);
+            subtitle.setSingleLine(true);
+            subtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams subParams = new LinearLayout.LayoutParams(-1, -2);
+            subParams.topMargin = dp(2);
+            labels.addView(subtitle, subParams);
+            item.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+
+            item.setOnClickListener(v -> {
+                dismissAddressSuggestions();
+                String target = suggestion.search
+                        ? "https://www.google.com/search?q=" + Uri.encode(query)
+                        : suggestion.url;
+                navigate(target);
+            });
+            panel.addView(item, new LinearLayout.LayoutParams(-1, dp(52)));
+        }
+
+        suggestionPopup = new PopupWindow(panel,
+                getResources().getDisplayMetrics().widthPixels - dp(20),
+                WindowManager.LayoutParams.WRAP_CONTENT, true);
+        suggestionPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        suggestionPopup.setOutsideTouchable(true);
+        suggestionPopup.setElevation(dp(18));
+        suggestionPopup.setInputMethodMode(PopupWindow.INPUT_METHOD_NEEDED);
+        suggestionPopup.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        suggestionPopup.setOnDismissListener(() -> suggestionPopup = null);
+        suggestionPopup.showAsDropDown(addressRow, -dp(1), dp(5));
     }
 
     private void createTab(String url) {
+        createTab(url, false);
+    }
+
+    private void createPrivateTab() {
+        createTab(HOME_URL, true);
+    }
+
+    private void createTab(String url, boolean privateMode) {
         BrowserTab tab = new BrowserTab();
-        if (pendingSessionState != null && !pendingSessionState.isEmpty()) {
+        tab.privateMode = privateMode;
+        if (!privateMode && pendingSessionState != null && !pendingSessionState.isEmpty()) {
             tab.serializedState = pendingSessionState;
             pendingSessionState = null;
         }
@@ -303,7 +530,16 @@ public class MainActivity extends Activity {
             boolean loadInitialUri) {
         try {
             GeckoRuntime runtime = ((AstroWebApplication) getApplication()).getGeckoRuntime();
-            GeckoSession newSession = new GeckoSession();
+            GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
+                    .usePrivateMode(tab.privateMode)
+                    .userAgentMode(tab.desktopMode
+                            ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                            : GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+                    .viewportMode(tab.desktopMode
+                            ? GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                            : GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
+                    .build();
+            GeckoSession newSession = new GeckoSession(settings);
             tab.session = newSession;
             tab.url = url == null ? HOME_URL : url;
             tab.canGoBack = false;
@@ -346,7 +582,7 @@ public class MainActivity extends Activity {
                     runOnUiThread(() -> {
                         if (uri == null) return;
                         tab.url = uri;
-                        storage.edit().putString("last_url", uri).apply();
+                        if (!tab.privateMode) storage.edit().putString("last_url", uri).apply();
                         if (uri.equals(HOME_URL)) {
                             lastScrollY = 0;
                             scrollAccumulator = 0f;
@@ -394,15 +630,32 @@ public class MainActivity extends Activity {
                 @Override
                 public void onPageStart(GeckoSession current, String uri) {
                     runOnUiThread(() -> {
-                        if (tab == activeTab) failureOverlay.setVisibility(View.GONE);
+                        if (tab == activeTab) {
+                            failureOverlay.setVisibility(View.GONE);
+                            pageProgress.setProgress(0);
+                            pageProgress.setVisibility(View.VISIBLE);
+                        }
                     });
                 }
 
                 @Override
+                public void onProgressChange(GeckoSession current, int progress) {
+                    if (tab == activeTab) {
+                        runOnUiThread(() -> {
+                            pageProgress.setProgress(Math.max(0, Math.min(100, progress)));
+                            if (progress >= 100) pageProgress.setVisibility(View.INVISIBLE);
+                        });
+                    }
+                }
+
+                @Override
                 public void onPageStop(GeckoSession current, boolean success) {
+                    if (tab == activeTab) {
+                        runOnUiThread(() -> pageProgress.setVisibility(View.INVISIBLE));
+                    }
                     if (success) {
                         recoveryAttempts = 0;
-                        addHistory(tab.url);
+                        if (!tab.privateMode) addHistory(tab.url);
                         current.flushSessionState();
                         if (tab == activeTab) {
                             handler.postDelayed(() -> captureTabPreview(tab, null), 320);
@@ -411,7 +664,8 @@ public class MainActivity extends Activity {
                 }
 
                 @Override
-                public void onSessionStateChange(GeckoSession current, GeckoSession.SessionState state) {
+                public void onSessionStateChange(GeckoSession current,
+                        GeckoSession.SessionState state) {
                     if (tab == activeTab || tab.session == current) saveSessionState(tab, state);
                 }
             });
@@ -419,7 +673,9 @@ public class MainActivity extends Activity {
             newSession.setScrollDelegate(new GeckoSession.ScrollDelegate() {
                 @Override
                 public void onScrollChanged(GeckoSession session, int scrollX, int scrollY) {
-                    if (tab != activeTab) return;
+                    if (tab != activeTab || addressField.hasFocus()
+                            || (suggestionPopup != null && suggestionPopup.isShowing())
+                            || (geckoView != null && geckoView.shouldPinOnScreen())) return;
                     int delta = scrollY - lastScrollY;
                     lastScrollY = Math.max(0, scrollY);
 
@@ -456,6 +712,10 @@ public class MainActivity extends Activity {
                     } catch (RuntimeException ignored) { }
                 }
                 activeTab = tab;
+                lastScrollY = 0;
+                scrollAccumulator = 0f;
+                scrollDirection = 0;
+                animateAddressBar(true);
                 geckoView.setSession(newSession);
                 newSession.setActive(true);
                 newSession.setFocused(true);
@@ -463,6 +723,8 @@ public class MainActivity extends Activity {
                 geckoView.coverUntilFirstPaint(BG);
                 failureOverlay.setVisibility(View.GONE);
                 addressField.setText(tab.url.equals(HOME_URL) ? "" : tab.url);
+                clearAddressButton.setVisibility(tab.url.equals(HOME_URL) ? View.GONE : View.VISIBLE);
+                pageProgress.setVisibility(View.INVISIBLE);
                 updateNavigationButtons();
                 updateBookmarkButton();
             } else {
@@ -508,6 +770,7 @@ public class MainActivity extends Activity {
 
     private BrowserTab createWindowTab(String requestedUrl) {
         BrowserTab tab = new BrowserTab();
+        tab.privateMode = activeTab != null && activeTab.privateMode;
         tab.url = requestedUrl == null || requestedUrl.isEmpty() ? HOME_URL : requestedUrl;
         tabs.add(tab);
         initializeTab(tab, tab.url, true, false);
@@ -598,11 +861,13 @@ public class MainActivity extends Activity {
         if (activeTab == null || activeTab.session == null || raw == null) return;
         String input = raw.trim();
         if (input.isEmpty()) return;
+        dismissAddressSuggestions();
 
         String target = input;
         boolean hasScheme = input.matches("^[a-zA-Z][a-zA-Z0-9+.-]*:.*");
         if (!hasScheme) {
-            if (input.contains(" ") || !input.contains(".")) {
+            boolean looksLikeHost = input.matches("(?i)^[a-z0-9-]+(\\.[a-z0-9-]+)+(:[0-9]+)?(/.*)?$");
+            if (input.contains(" ") || !looksLikeHost) {
                 target = "https://www.google.com/search?q=" + Uri.encode(input);
             } else {
                 target = "https://" + input;
@@ -610,12 +875,16 @@ public class MainActivity extends Activity {
         }
 
         activeTab.url = target;
+        if (!activeTab.privateMode) storage.edit().putString("last_url", target).apply();
         failureOverlay.setVisibility(View.GONE);
+        pageProgress.setProgress(0);
+        pageProgress.setVisibility(View.VISIBLE);
         hideKeyboard();
         try {
             activeTab.session.loadUri(target);
         } catch (RuntimeException error) {
             Log.e(TAG, "Navigation failed", error);
+            pageProgress.setVisibility(View.INVISIBLE);
             showFailure("No se pudo abrir la dirección",
                     "Reinicia la pestaña e inténtalo de nuevo.");
         }
@@ -636,6 +905,7 @@ public class MainActivity extends Activity {
         }
         activeTab.url = HOME_URL;
         addressField.setText("");
+        pageProgress.setVisibility(View.INVISIBLE);
         failureOverlay.setVisibility(View.GONE);
         activeTab.session.loadUri(HOME_URL);
     }
@@ -644,6 +914,8 @@ public class MainActivity extends Activity {
         if (activeTab == null || activeTab.session == null) return;
         try {
             failureOverlay.setVisibility(View.GONE);
+            pageProgress.setProgress(0);
+            pageProgress.setVisibility(View.VISIBLE);
             activeTab.session.reload();
         } catch (RuntimeException error) {
             restartTab(activeTab, activeTab.url);
@@ -748,7 +1020,8 @@ public class MainActivity extends Activity {
         rows.setOrientation(LinearLayout.VERTICAL);
         rows.setPadding(0, dp(12), 0, dp(18));
 
-        final int columns = getResources().getConfiguration().screenWidthDp >= 600 ? 3 : 2;
+        int screenWidth = getResources().getConfiguration().screenWidthDp;
+        final int columns = screenWidth >= 960 ? 4 : (screenWidth >= 650 ? 3 : 2);
         for (int i = 0; i < tabs.size(); i += columns) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -888,7 +1161,7 @@ public class MainActivity extends Activity {
         previewFrame.addView(close, closeParams);
         close.setOnClickListener(v -> closeTabFromOverview(tab, overviewDialog));
 
-        card.addView(previewFrame, new LinearLayout.LayoutParams(-1, dp(118)));
+        card.addView(previewFrame, new LinearLayout.LayoutParams(-1, dp(210)));
 
         LinearLayout details = new LinearLayout(this);
         details.setOrientation(LinearLayout.VERTICAL);
@@ -914,6 +1187,14 @@ public class MainActivity extends Activity {
         urlParams.topMargin = dp(3);
         details.addView(url, urlParams);
 
+        if (tab.privateMode) {
+            TextView privateBadge = new TextView(this);
+            privateBadge.setText("Pestaña privada");
+            privateBadge.setTextSize(9);
+            privateBadge.setTextColor(ACCENT);
+            privateBadge.setPadding(0, dp(5), 0, 0);
+            details.addView(privateBadge);
+        }
         card.addView(details);
         card.setOnClickListener(v -> {
             overviewDialog.dismiss();
@@ -998,6 +1279,9 @@ public class MainActivity extends Activity {
         List<Runnable> actions = new ArrayList<>();
 
         addTool(labels, icons, actions, "Nueva pestaña", R.drawable.ic_add, () -> createTab(HOME_URL));
+        addTool(labels, icons, actions, "Pestaña privada", R.drawable.ic_private, this::createPrivateTab);
+        addTool(labels, icons, actions, "Buscar en página", R.drawable.ic_search, this::showFindInPage);
+        addTool(labels, icons, actions, "Modo escritorio", R.drawable.ic_desktop, this::toggleDesktopMode);
         addTool(labels, icons, actions, "Atrás", R.drawable.ic_back, this::goBack);
         addTool(labels, icons, actions, "Adelante", R.drawable.ic_forward, this::goForward);
         addTool(labels, icons, actions, "Recargar", R.drawable.ic_reload, this::reloadPage);
@@ -1040,7 +1324,7 @@ public class MainActivity extends Activity {
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 row.setGravity(Gravity.CENTER);
                 LinearLayout.LayoutParams rowParams =
-                        new LinearLayout.LayoutParams(-1, dp(68));
+                        new LinearLayout.LayoutParams(-1, dp(58));
                 rowParams.topMargin = dp(2);
                 panel.addView(row, rowParams);
             }
@@ -1064,12 +1348,12 @@ public class MainActivity extends Activity {
             TextView label = new TextView(this);
             label.setText(labels.get(i));
             label.setTextColor(TEXT);
-            label.setTextSize(10);
+            label.setTextSize(9);
             label.setGravity(Gravity.CENTER);
             label.setSingleLine(true);
             label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-1, -2);
-            labelParams.topMargin = dp(5);
+            labelParams.topMargin = dp(3);
             item.addView(label, labelParams);
 
             row.addView(item, new LinearLayout.LayoutParams(0, -1, 1f));
@@ -1400,7 +1684,7 @@ public class MainActivity extends Activity {
     }
 
     private void saveSessionState(BrowserTab tab, GeckoSession.SessionState state) {
-        if (tab == null || state == null || tab != activeTab) return;
+        if (tab == null || state == null || tab != activeTab || tab.privateMode) return;
         try {
             String serialized = state.toString();
             if (serialized == null || serialized.isEmpty()) return;
@@ -1415,8 +1699,8 @@ public class MainActivity extends Activity {
     }
 
     private void animateAddressBar(boolean show) {
-        if (addressRow == null) return;
-        if (show == !addressBarHidden && addressRow.getVisibility() == View.VISIBLE) return;
+        if (topChrome == null) return;
+        if (show == !addressBarHidden && topChrome.getVisibility() == View.VISIBLE) return;
         if (!show && addressBarHidden) return;
 
         addressBarHidden = !show;
@@ -1425,50 +1709,41 @@ public class MainActivity extends Activity {
             addressAnimator = null;
         }
 
-        View row = addressRow;
-        int targetHeight = show ? dp(50) : 0;
-        int currentHeight = Math.max(0, row.getLayoutParams().height);
+        View chrome = topChrome;
+        int distance = chrome.getHeight() > 0 ? chrome.getHeight() : dp(52);
+        float startTranslation = chrome.getTranslationY();
+        float endTranslation = show ? 0f : -distance;
+        float startAlpha = chrome.getAlpha();
+        float endAlpha = show ? 1f : 0f;
 
         if (show) {
-            row.setVisibility(View.VISIBLE);
-            if (addressDivider != null) addressDivider.setVisibility(View.VISIBLE);
-            if (currentHeight == 0) {
-                row.setAlpha(0f);
-                row.setTranslationY(-dp(10));
+            chrome.setVisibility(View.VISIBLE);
+            if (startTranslation == 0f && startAlpha == 1f) {
+                chrome.setTranslationY(-distance);
+                chrome.setAlpha(0f);
+                startTranslation = -distance;
+                startAlpha = 0f;
             }
         }
 
-        float startAlpha = row.getAlpha();
-        float endAlpha = show ? 1f : 0f;
-        float startTranslation = row.getTranslationY();
-        float endTranslation = show ? 0f : -dp(10);
-        int token = ++addressAnimationToken;
-
+        final float fromY = startTranslation;
+        final float fromAlpha = startAlpha;
+        final int token = ++addressAnimationToken;
         ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
         addressAnimator = animator;
-        animator.setDuration(260);
-        animator.setInterpolator(new DecelerateInterpolator(1.7f));
+        animator.setDuration(show ? 230 : 190);
+        animator.setInterpolator(new DecelerateInterpolator(1.35f));
         animator.addUpdateListener(value -> {
-            float fraction = (float) value.getAnimatedValue();
-            int height = currentHeight + Math.round((targetHeight - currentHeight) * fraction);
-            android.view.ViewGroup.LayoutParams params = row.getLayoutParams();
-            params.height = Math.max(0, height);
-            row.setLayoutParams(params);
-            row.setAlpha(startAlpha + (endAlpha - startAlpha) * fraction);
-            row.setTranslationY(startTranslation + (endTranslation - startTranslation) * fraction);
+            float t = (float) value.getAnimatedValue();
+            chrome.setTranslationY(fromY + (endTranslation - fromY) * t);
+            chrome.setAlpha(fromAlpha + (endAlpha - fromAlpha) * t);
         });
         animator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (token != addressAnimationToken) return;
-                android.view.ViewGroup.LayoutParams params = row.getLayoutParams();
-                params.height = targetHeight;
-                row.setLayoutParams(params);
-                row.setTranslationY(endTranslation);
-                row.setAlpha(endAlpha);
-                if (!show) {
-                    row.setVisibility(View.GONE);
-                    if (addressDivider != null) addressDivider.setVisibility(View.GONE);
-                }
+                chrome.setTranslationY(endTranslation);
+                chrome.setAlpha(endAlpha);
+                if (!show) chrome.setVisibility(View.GONE);
                 addressAnimator = null;
             }
         });
@@ -1486,11 +1761,99 @@ public class MainActivity extends Activity {
     }
 
     private void hideKeyboard() {
+        dismissAddressSuggestions();
         InputMethodManager manager =
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (manager != null && addressField != null) {
             manager.hideSoftInputFromWindow(addressField.getWindowToken(), 0);
             addressField.clearFocus();
+        }
+    }
+
+    private void showFindInPage() {
+        if (activeTab == null || activeTab.session == null) return;
+        EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setTextColor(TEXT);
+        query.setHintTextColor(MUTED);
+        query.setHint("Texto que quieres encontrar");
+        query.setPadding(dp(12), dp(8), dp(12), dp(8));
+        new AlertDialog.Builder(this)
+                .setTitle("Buscar en la página")
+                .setView(query)
+                .setPositiveButton("Buscar", (dialog, which) -> {
+                    String text = query.getText().toString().trim();
+                    if (!text.isEmpty()) {
+                        activeTab.session.getFinder().find(
+                                text, GeckoSession.FINDER_FIND_FORWARD);
+                    }
+                })
+                .setNegativeButton("Cerrar", null)
+                .show();
+    }
+
+    private void toggleDesktopMode() {
+        if (activeTab == null || activeTab.session == null) return;
+        activeTab.desktopMode = !activeTab.desktopMode;
+        try {
+            GeckoSessionSettings settings = activeTab.session.getSettings();
+            settings.setUserAgentMode(activeTab.desktopMode
+                    ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                    : GeckoSessionSettings.USER_AGENT_MODE_MOBILE);
+            settings.setViewportMode(activeTab.desktopMode
+                    ? GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                    : GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
+            Toast.makeText(this,
+                    activeTab.desktopMode ? "Modo escritorio activado" : "Modo móvil activado",
+                    Toast.LENGTH_SHORT).show();
+            reloadPage();
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Desktop mode could not be changed", error);
+            Toast.makeText(this, "No se pudo cambiar el modo de visualización",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void cycleTabs(boolean reverse) {
+        if (tabs.size() < 2 || activeTab == null) return;
+        int index = tabs.indexOf(activeTab);
+        int next = reverse ? index - 1 : index + 1;
+        if (next < 0) next = tabs.size() - 1;
+        if (next >= tabs.size()) next = 0;
+        activateTab(tabs.get(next));
+    }
+
+    @Override
+    public boolean onKeyShortcut(int keyCode, KeyEvent event) {
+        if (event == null || !event.isCtrlPressed()) {
+            return super.onKeyShortcut(keyCode, event);
+        }
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_L:
+                focusAddress();
+                addressField.selectAll();
+                return true;
+            case KeyEvent.KEYCODE_T:
+                createTab(HOME_URL);
+                return true;
+            case KeyEvent.KEYCODE_N:
+                if (event.isShiftPressed()) createPrivateTab();
+                else createTab(HOME_URL);
+                return true;
+            case KeyEvent.KEYCODE_W:
+                closeActiveTab();
+                return true;
+            case KeyEvent.KEYCODE_R:
+                reloadPage();
+                return true;
+            case KeyEvent.KEYCODE_F:
+                showFindInPage();
+                return true;
+            case KeyEvent.KEYCODE_TAB:
+                cycleTabs(event.isShiftPressed());
+                return true;
+            default:
+                return super.onKeyShortcut(keyCode, event);
         }
     }
 
@@ -1505,7 +1868,7 @@ public class MainActivity extends Activity {
                 Log.w(TAG, "Could not pause browser session cleanly", error);
             }
         }
-        if (activeTab != null) {
+        if (activeTab != null && !activeTab.privateMode) {
             storage.edit().putString("last_url", activeTab.url)
                     .putString("session_state", activeTab.serializedState)
                     .commit();
@@ -1528,6 +1891,20 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (suggestionPopup != null && suggestionPopup.isShowing()) {
+            dismissAddressSuggestions();
+            hideKeyboard();
+            return;
+        }
+        if (addressField != null && addressField.hasFocus()) {
+            hideKeyboard();
+            addressField.clearFocus();
+            return;
+        }
+        if (addressBarHidden) {
+            animateAddressBar(true);
+            return;
+        }
         if (activeTab != null && activeTab.canGoBack) {
             goBack();
         } else if (tabs.size() > 1) {
