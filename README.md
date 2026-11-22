@@ -1,25 +1,27 @@
 # AstroWeb 🌌
 
-A cosmic, minimalist Android web browser powered by Mozilla GeckoView.
+AstroWeb is a minimalist Android browser powered by Mozilla GeckoView.
 
-## Project status
+## Current version
 
-AstroWeb is in its initial prototype stage. The first milestone is a working Android browser shell using GeckoView, built through GitHub Actions so development can be managed from an Android phone.
+- Version: **0.15**
+- Android application, built with Java 17 and Gradle
+- GeckoView 160
+- Debug APKs built separately for ARM64 and ARMv7 through GitHub Actions
 
-## Initial technology
+## Available browser features
 
-- Android native application
-- Java 17
-- GeckoView (Mozilla)
-- Gradle build
-- GitHub Actions APK builds
+- Multi-tab browsing with tab previews
+- Private tabs
+- Address suggestions from bookmarks and history
+- Bookmarks and browsing history
+- PDF export and a saved-downloads list
+- Site permission prompts and per-site permission preferences
+- Mobile and desktop display modes
+- Find in page and basic browser navigation controls
 
-## Planned architecture
+## Build
 
-- `AstroEngine`: navigation engine abstraction (GeckoView first)
-- `AstroShield`: content and tracker protection
-- `AstroExtensions`: WebExtensions management
-- `AstroStorage`: bookmarks, history, and browser data
-- `AstroUI`: cosmic, minimal, Liquid Glass-inspired interface
+GitHub Actions runs `:app:assembleDebug` on pushes to `main` and uploads the architecture-specific APKs as workflow artifacts.
 
-This repository is an early prototype. Features will be added and verified incrementally.
+AstroWeb is still under active development. A successful build confirms compilation and artifact upload; it does not replace testing on a physical Android device.
