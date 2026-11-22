@@ -40,6 +40,6 @@ jobs:
       - name: Upload architecture-specific APKs
         uses: actions/upload-artifact@v4
         with:
-          name: AstroWeb-0.13-APKs
+          name: AstroWeb-0.14-APKs
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
