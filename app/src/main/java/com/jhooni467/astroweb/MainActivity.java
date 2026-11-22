@@ -16,8 +16,7 @@ import android.widget.TextView;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoView;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
+import android.net.Uri;
 import java.util.List;
 
 /**
@@ -27,7 +26,7 @@ import java.util.List;
 public class MainActivity extends Activity {
     private static final String HOME_URL = "file:///android_asset/home.html";
     private static final int SPACE = Color.rgb(9, 11, 27);
-    private static final int GLASS = Color.argb(170,  thirty(),  thirty(),  sixtyFive());
+    private static final int GLASS = Color.argb(170, 30, 30, 65);
     private static final int TEXT = Color.rgb(246, 244, 255);
     private static final int MUTED = Color.rgb(170, 169, 198);
     private static final int ACCENT = Color.rgb(169, 155, 255);
@@ -40,8 +39,6 @@ public class MainActivity extends Activity {
     private boolean canGoBack;
     private boolean canGoForward;
 
-    private static int thirty() { return 30; }
-    private static int sixtyFive() { return 65; }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -234,7 +231,7 @@ public class MainActivity extends Activity {
         if (!hasScheme) {
             if (input.contains(" ") || !input.contains(".")) {
                 target = "https://www.google.com/search?q="
-                        + URLEncoder.encode(input, StandardCharsets.UTF_8);
+                        + Uri.encode(input);
             } else {
                 target = "https://" + input;
             }
