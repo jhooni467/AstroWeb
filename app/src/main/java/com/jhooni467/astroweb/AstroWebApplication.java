@@ -5,18 +5,17 @@ import android.app.Application;
 import org.mozilla.geckoview.GeckoRuntime;
 
 /**
- * Owns the process-wide GeckoRuntime. A single runtime can serve many sessions/tabs.
+ * Provides one GeckoRuntime for the lifetime of the application process.
+ * Runtime creation is lazy so MainActivity can display a useful fallback
+ * instead of failing before the browser interface is shown.
  */
 public class AstroWebApplication extends Application {
     private GeckoRuntime geckoRuntime;
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        geckoRuntime = GeckoRuntime.create(this);
-    }
-
-    public GeckoRuntime getGeckoRuntime() {
+    public synchronized GeckoRuntime getGeckoRuntime() {
+        if (geckoRuntime == null) {
+            geckoRuntime = GeckoRuntime.create(this);
+        }
         return geckoRuntime;
     }
 }
