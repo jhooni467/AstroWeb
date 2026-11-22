@@ -11,6 +11,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.ColorDrawable;
@@ -35,6 +36,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -90,6 +93,7 @@ public class MainActivity extends Activity {
         String url = HOME_URL;
         String title = "Nueva pestaña";
         String serializedState;
+        Bitmap thumbnail;
         boolean canGoBack;
         boolean canGoForward;
     }
@@ -215,7 +219,8 @@ public class MainActivity extends Activity {
         bookmarkButton = bottomButton(R.drawable.ic_bookmark, "Marcadores", this::toggleBookmark);
         ImageButton search = bottomButton(R.drawable.ic_search, "Buscar", this::focusAddress);
         ImageButton tabs = bottomButton(R.drawable.ic_tabs, "Pestañas", this::showTabsDialog);
-        ImageButton menu = bottomButton(R.drawable.ic_more, "Menú", () -> showBrowserMenu(bottomBar));
+        ImageButton menu = bottomButton(R.drawable.ic_more, "Herramientas", () -> {});
+        menu.setOnClickListener(v -> showBrowserMenu(v));
 
         addWeighted(bottomBar, home);
         addWeighted(bottomBar, bookmarkButton);
@@ -256,6 +261,9 @@ public class MainActivity extends Activity {
     private ImageButton bottomButton(int icon, String description, Runnable action) {
         ImageButton button = iconButton(icon, description, action);
         button.setImageTintList(ColorStateList.valueOf(TEXT));
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setPadding(0, 0, 0, 0);
+        button.setAdjustViewBounds(false);
         return button;
     }
 
@@ -383,6 +391,9 @@ public class MainActivity extends Activity {
                         recoveryAttempts = 0;
                         addHistory(tab.url);
                         current.flushSessionState();
+                        if (tab == activeTab) {
+                            handler.postDelayed(() -> captureTabPreview(tab, null), 320);
+                        }
                     }
                 }
 
@@ -481,6 +492,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (activeTab != null && activeTab != tab && activeTab.session != null) {
+            captureTabPreview(activeTab, null);
             try { activeTab.session.setActive(false); }
             catch (RuntimeException ignored) { }
         }
@@ -611,25 +623,304 @@ public class MainActivity extends Activity {
     }
 
     private void showTabsDialog() {
-        if (tabs.isEmpty()) {
-            createTab(HOME_URL);
+        captureTabPreview(activeTab, this::showTabsOverview);
+    }
+
+    private void captureTabPreview(BrowserTab tab, Runnable afterCapture) {
+        if (tab == null || tab.session == null || geckoView == null) {
+            if (afterCapture != null) afterCapture.run();
             return;
         }
-        List<String> labels = new ArrayList<>();
-        List<String> subtitles = new ArrayList<>();
-        List<Integer> icons = new ArrayList<>();
-        List<Runnable> actions = new ArrayList<>();
-        for (BrowserTab tab : new ArrayList<>(tabs)) {
-            String label = tab.title == null || tab.title.trim().isEmpty()
-                    ? "Nueva pestaña" : tab.title;
-            labels.add((tab == activeTab ? "✓  " : "") + shorten(label, 34));
-            subtitles.add(tab.url.equals(HOME_URL) ? "Página de inicio" : shorten(tab.url, 56));
-            icons.add(R.drawable.ic_tabs);
-            actions.add(() -> activateTab(tab));
+        try {
+            geckoView.capturePixels().accept(bitmap -> {
+                if (bitmap != null && !bitmap.isRecycled()) {
+                    try {
+                        int maxWidth = dp(360);
+                        float scale = Math.min(1f, (float) maxWidth / Math.max(1, bitmap.getWidth()));
+                        int width = Math.max(1, Math.round(bitmap.getWidth() * scale));
+                        int height = Math.max(1, Math.round(bitmap.getHeight() * scale));
+                        tab.thumbnail = Bitmap.createScaledBitmap(bitmap, width, height, true);
+                    } catch (RuntimeException imageError) {
+                        Log.w(TAG, "Could not create tab preview", imageError);
+                    }
+                }
+                if (afterCapture != null) afterCapture.run();
+            }, error -> {
+                Log.w(TAG, "Tab preview capture unavailable", error);
+                if (afterCapture != null) afterCapture.run();
+            });
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Tab preview capture failed", error);
+            if (afterCapture != null) afterCapture.run();
         }
-        showBottomSheet("Pestañas abiertas", labels, subtitles, icons, actions,
-                "Nueva pestaña", () -> createTab(HOME_URL),
-                "Cerrar pestaña actual", this::closeActiveTab);
+    }
+
+    private void showTabsOverview() {
+        Dialog dialog = new Dialog(this);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setBackgroundColor(BG);
+        page.setPadding(dp(16), dp(18), dp(16), dp(14));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+
+        LinearLayout headingGroup = new LinearLayout(this);
+        headingGroup.setOrientation(LinearLayout.VERTICAL);
+        TextView heading = new TextView(this);
+        heading.setText("Pestañas");
+        heading.setTextColor(TEXT);
+        heading.setTextSize(23);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        headingGroup.addView(heading);
+
+        TextView count = new TextView(this);
+        count.setText(tabs.size() + (tabs.size() == 1 ? " ventana abierta" : " ventanas abiertas"));
+        count.setTextColor(MUTED);
+        count.setTextSize(12);
+        LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(-2, -2);
+        countParams.topMargin = dp(2);
+        headingGroup.addView(count, countParams);
+        header.addView(headingGroup, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView addTab = overviewHeaderAction("+", "Nueva pestaña");
+        addTab.setOnClickListener(v -> {
+            dialog.dismiss();
+            createTab(HOME_URL);
+        });
+        header.addView(addTab, new LinearLayout.LayoutParams(dp(42), dp(42)));
+
+        TextView done = overviewHeaderAction("×", "Cerrar vista de pestañas");
+        done.setOnClickListener(v -> dialog.dismiss());
+        LinearLayout.LayoutParams doneParams = new LinearLayout.LayoutParams(dp(42), dp(42));
+        doneParams.leftMargin = dp(6);
+        header.addView(done, doneParams);
+
+        page.addView(header, new LinearLayout.LayoutParams(-1, dp(54)));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setClipToPadding(false);
+        scroll.setFillViewport(false);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        rows.setPadding(0, dp(12), 0, dp(18));
+
+        final int columns = getResources().getConfiguration().screenWidthDp >= 600 ? 3 : 2;
+        for (int i = 0; i < tabs.size(); i += columns) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int c = 0; c < columns; c++) {
+                int index = i + c;
+                if (index < tabs.size()) {
+                    BrowserTab tab = tabs.get(index);
+                    View card = createTabCard(tab, dialog);
+                    LinearLayout.LayoutParams cardParams =
+                            new LinearLayout.LayoutParams(0, -2, 1f);
+                    if (c > 0) cardParams.leftMargin = dp(7);
+                    if (c < columns - 1) cardParams.rightMargin = dp(7);
+                    row.addView(card, cardParams);
+                } else {
+                    row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+                }
+            }
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
+            rowParams.bottomMargin = dp(14);
+            rows.addView(row, rowParams);
+        }
+
+        scroll.addView(rows, new ScrollView.LayoutParams(-1, -2));
+        page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        TextView newTabButton = sheetAction("＋   Nueva pestaña", true);
+        newTabButton.setOnClickListener(v -> {
+            dialog.dismiss();
+            createTab(HOME_URL);
+        });
+        LinearLayout.LayoutParams newButtonParams = new LinearLayout.LayoutParams(-1, dp(48));
+        newButtonParams.topMargin = dp(8);
+        page.addView(newTabButton, newButtonParams);
+
+        page.setAlpha(0f);
+        page.setTranslationY(dp(8));
+        dialog.setContentView(page);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams params = window.getAttributes();
+            params.width = WindowManager.LayoutParams.MATCH_PARENT;
+            params.height = WindowManager.LayoutParams.MATCH_PARENT;
+            params.gravity = Gravity.CENTER;
+            params.dimAmount = 0.32f;
+            window.setAttributes(params);
+        }
+        dialog.show();
+        if (window != null) {
+            window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT);
+        }
+        page.animate().alpha(1f).translationY(0f).setDuration(210)
+                .setInterpolator(new DecelerateInterpolator(1.3f)).start();
+    }
+
+    private TextView overviewHeaderAction(String label, String description) {
+        TextView action = new TextView(this);
+        action.setText(label);
+        action.setTextSize(label.equals("+") ? 26 : 25);
+        action.setTextColor(TEXT);
+        action.setGravity(Gravity.CENTER);
+        action.setContentDescription(description);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(35, 43, 36));
+        background.setCornerRadius(dp(14));
+        action.setBackground(background);
+        applySoftRipple(action);
+        return action;
+    }
+
+    private View createTabCard(BrowserTab tab, Dialog overviewDialog) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setClipToOutline(true);
+        GradientDrawable cardBackground = new GradientDrawable();
+        cardBackground.setColor(Color.rgb(29, 36, 31));
+        cardBackground.setCornerRadius(dp(15));
+        cardBackground.setStroke(dp(1), tab == activeTab
+                ? Color.rgb(117, 151, 119) : Color.rgb(54, 65, 56));
+        card.setBackground(cardBackground);
+        applySoftRipple(card);
+
+        FrameLayout previewFrame = new FrameLayout(this);
+        previewFrame.setBackgroundColor(Color.rgb(22, 28, 24));
+        ImageView preview = new ImageView(this);
+        preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (tab.thumbnail != null && !tab.thumbnail.isRecycled()) {
+            preview.setImageBitmap(tab.thumbnail);
+        } else {
+            TextView placeholder = new TextView(this);
+            String host = getTabHost(tab.url);
+            placeholder.setText(host);
+            placeholder.setTextColor(Color.rgb(174, 190, 173));
+            placeholder.setTextSize(14);
+            placeholder.setGravity(Gravity.CENTER);
+            placeholder.setBackgroundColor(Color.rgb(25, 33, 27));
+            previewFrame.addView(placeholder, new FrameLayout.LayoutParams(-1, -1));
+        }
+        previewFrame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+
+        if (tab == activeTab) {
+            TextView activeTag = new TextView(this);
+            activeTag.setText("ACTIVA");
+            activeTag.setTextSize(8);
+            activeTag.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            activeTag.setTextColor(Color.rgb(22, 31, 23));
+            activeTag.setGravity(Gravity.CENTER);
+            activeTag.setPadding(dp(7), dp(4), dp(7), dp(4));
+            GradientDrawable tagBg = new GradientDrawable();
+            tagBg.setColor(ACCENT);
+            tagBg.setCornerRadius(dp(8));
+            activeTag.setBackground(tagBg);
+            FrameLayout.LayoutParams tagParams = new FrameLayout.LayoutParams(-2, -2,
+                    Gravity.BOTTOM | Gravity.START);
+            tagParams.leftMargin = dp(8);
+            tagParams.bottomMargin = dp(8);
+            previewFrame.addView(activeTag, tagParams);
+        }
+
+        TextView close = new TextView(this);
+        close.setText("×");
+        close.setTextSize(19);
+        close.setTextColor(Color.WHITE);
+        close.setGravity(Gravity.CENTER);
+        GradientDrawable closeBg = new GradientDrawable();
+        closeBg.setColor(Color.rgb(25, 29, 26));
+        closeBg.setCornerRadius(dp(14));
+        close.setBackground(closeBg);
+        close.setContentDescription("Cerrar pestaña");
+        applySoftRipple(close);
+        FrameLayout.LayoutParams closeParams = new FrameLayout.LayoutParams(dp(28), dp(28),
+                Gravity.TOP | Gravity.END);
+        closeParams.topMargin = dp(7);
+        closeParams.rightMargin = dp(7);
+        previewFrame.addView(close, closeParams);
+        close.setOnClickListener(v -> closeTabFromOverview(tab, overviewDialog));
+
+        card.addView(previewFrame, new LinearLayout.LayoutParams(-1, dp(118)));
+
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setPadding(dp(10), dp(9), dp(10), dp(10));
+
+        TextView title = new TextView(this);
+        title.setText(tab.title == null || tab.title.trim().isEmpty()
+                ? "Nueva pestaña" : shorten(tab.title, 31));
+        title.setTextColor(TEXT);
+        title.setTextSize(12);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        details.addView(title);
+
+        TextView url = new TextView(this);
+        url.setText(getTabHost(tab.url));
+        url.setTextColor(MUTED);
+        url.setTextSize(10);
+        url.setSingleLine(true);
+        url.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams urlParams = new LinearLayout.LayoutParams(-1, -2);
+        urlParams.topMargin = dp(3);
+        details.addView(url, urlParams);
+
+        card.addView(details);
+        card.setOnClickListener(v -> {
+            overviewDialog.dismiss();
+            activateTab(tab);
+        });
+        return card;
+    }
+
+    private String getTabHost(String url) {
+        if (url == null || url.isEmpty() || url.equals(HOME_URL)) return "Nueva pestaña";
+        try {
+            Uri parsed = Uri.parse(url);
+            String host = parsed.getHost();
+            return host == null ? shorten(url, 35) : host.replaceFirst("^www\\.", "");
+        } catch (RuntimeException error) {
+            return shorten(url, 35);
+        }
+    }
+
+    private void closeTabFromOverview(BrowserTab tab, Dialog overviewDialog) {
+        if (tab == null || !tabs.contains(tab)) return;
+        if (tabs.size() == 1) {
+            tab.thumbnail = null;
+            tab.title = "Nueva pestaña";
+            restartTab(tab, HOME_URL);
+            overviewDialog.dismiss();
+            showTabsDialog();
+            return;
+        }
+
+        int oldIndex = tabs.indexOf(tab);
+        boolean wasActive = tab == activeTab;
+        tabs.remove(tab);
+        GeckoSession old = tab.session;
+        tab.session = null;
+        tab.thumbnail = null;
+        if (old != null) {
+            try { old.close(); }
+            catch (RuntimeException error) { Log.w(TAG, "Tab close failed", error); }
+        }
+
+        if (wasActive) {
+            activeTab = null;
+            BrowserTab next = tabs.get(Math.max(0, Math.min(oldIndex, tabs.size() - 1)));
+            activateTab(next);
+        }
+        updateTabCounter();
+        overviewDialog.dismiss();
+        showTabsDialog();
     }
 
     private String shorten(String value, int max) {
@@ -661,38 +952,112 @@ public class MainActivity extends Activity {
 
     private void showBrowserMenu(View anchor) {
         List<String> labels = new ArrayList<>();
-        List<String> subtitles = new ArrayList<>();
         List<Integer> icons = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
 
-        addMenuItem(labels, subtitles, icons, actions,
-                "Nueva pestaña", "Abrir otra página", R.drawable.ic_add, () -> createTab(HOME_URL));
-        addMenuItem(labels, subtitles, icons, actions,
-                "Atrás", "Página anterior", R.drawable.ic_back, this::goBack);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Adelante", "Siguiente página", R.drawable.ic_forward, this::goForward);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Recargar", "Actualizar esta página", R.drawable.ic_reload, this::reloadPage);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Marcadores", "Páginas guardadas", R.drawable.ic_bookmark, this::showBookmarksDialog);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Historial", "Páginas visitadas", R.drawable.ic_history, this::showHistoryDialog);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Compartir", "Enviar enlace", R.drawable.ic_share, this::shareCurrentPage);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Copiar enlace", "Copiar dirección actual", R.drawable.ic_copy, this::copyCurrentAddress);
-        addMenuItem(labels, subtitles, icons, actions,
-                "Abrir en otro navegador", "Usar otra aplicación", R.drawable.ic_external, this::openInExternalBrowser);
+        addTool(labels, icons, actions, "Nueva pestaña", R.drawable.ic_add, () -> createTab(HOME_URL));
+        addTool(labels, icons, actions, "Atrás", R.drawable.ic_back, this::goBack);
+        addTool(labels, icons, actions, "Adelante", R.drawable.ic_forward, this::goForward);
+        addTool(labels, icons, actions, "Recargar", R.drawable.ic_reload, this::reloadPage);
+        addTool(labels, icons, actions, "Marcadores", R.drawable.ic_bookmark, this::showBookmarksDialog);
+        addTool(labels, icons, actions, "Historial", R.drawable.ic_history, this::showHistoryDialog);
+        addTool(labels, icons, actions, "Compartir", R.drawable.ic_share, this::shareCurrentPage);
+        addTool(labels, icons, actions, "Copiar enlace", R.drawable.ic_copy, this::copyCurrentAddress);
+        addTool(labels, icons, actions, "Abrir fuera", R.drawable.ic_external, this::openInExternalBrowser);
 
-        showBottomSheet("Herramientas", labels, subtitles, icons, actions,
-                null, null, null, null);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(13), dp(10), dp(13), dp(12));
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(Color.rgb(31, 38, 32));
+        panelBg.setCornerRadius(dp(18));
+        panelBg.setStroke(dp(1), Color.rgb(58, 70, 59));
+        panel.setBackground(panelBg);
+
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Herramientas");
+        title.setTextColor(TEXT);
+        title.setTextSize(14);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.addView(title, new LinearLayout.LayoutParams(0, dp(28), 1f));
+        TextView close = new TextView(this);
+        close.setText("×");
+        close.setTextColor(MUTED);
+        close.setTextSize(21);
+        close.setGravity(Gravity.CENTER);
+        heading.addView(close, new LinearLayout.LayoutParams(dp(30), dp(28)));
+        panel.addView(heading);
+
+        final PopupWindow[] popupHolder = new PopupWindow[1];
+        LinearLayout row = null;
+        for (int i = 0; i < labels.size(); i++) {
+            if (i % 3 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER);
+                LinearLayout.LayoutParams rowParams =
+                        new LinearLayout.LayoutParams(-1, dp(68));
+                rowParams.topMargin = dp(2);
+                panel.addView(row, rowParams);
+            }
+
+            final int index = i;
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER);
+            item.setPadding(dp(3), dp(4), dp(3), dp(4));
+            applySoftRipple(item);
+
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(icons.get(i));
+            icon.setImageTintList(ColorStateList.valueOf(
+                    labels.get(i).equals("Atrás") && (activeTab == null || !activeTab.canGoBack)
+                    || labels.get(i).equals("Adelante") && (activeTab == null || !activeTab.canGoForward)
+                            ? Color.rgb(99, 109, 100) : ACCENT));
+            icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            item.addView(icon, new LinearLayout.LayoutParams(dp(23), dp(23)));
+
+            TextView label = new TextView(this);
+            label.setText(labels.get(i));
+            label.setTextColor(TEXT);
+            label.setTextSize(10);
+            label.setGravity(Gravity.CENTER);
+            label.setSingleLine(true);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-1, -2);
+            labelParams.topMargin = dp(5);
+            item.addView(label, labelParams);
+
+            row.addView(item, new LinearLayout.LayoutParams(0, -1, 1f));
+            item.setOnClickListener(v -> {
+                if (popupHolder[0] != null) popupHolder[0].dismiss();
+                actions.get(index).run();
+            });
+        }
+
+        PopupWindow popup = new PopupWindow(panel,
+                Math.min(dp(330), getResources().getDisplayMetrics().widthPixels - dp(24)),
+                WindowManager.LayoutParams.WRAP_CONTENT, true);
+        popupHolder[0] = popup;
+        panel.setAlpha(0f);
+        panel.setTranslationY(dp(10));
+        popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        popup.setOutsideTouchable(true);
+        popup.setElevation(dp(18));
+        popup.setAnimationStyle(android.R.style.Animation_Dialog);
+        popup.setOnDismissListener(() -> { });
+        close.setOnClickListener(v -> popup.dismiss());
+
+        popup.showAtLocation(anchor, Gravity.BOTTOM | Gravity.END, dp(12), dp(62));
+        panel.animate().alpha(1f).translationY(0f).setDuration(170)
+                .setInterpolator(new DecelerateInterpolator(1.4f)).start();
     }
 
-    private void addMenuItem(List<String> labels, List<String> subtitles,
-            List<Integer> icons, List<Runnable> actions,
-            String label, String subtitle, int icon, Runnable action) {
+    private void addTool(List<String> labels, List<Integer> icons,
+            List<Runnable> actions, String label, int icon, Runnable action) {
         labels.add(label);
-        subtitles.add(subtitle);
         icons.add(icon);
         actions.add(action);
     }
