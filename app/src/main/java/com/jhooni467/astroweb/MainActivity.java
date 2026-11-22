@@ -74,6 +74,7 @@ public class MainActivity extends Activity {
 
     private GeckoView geckoView;
     private FrameLayout browserRoot;
+    private FrameLayout browserFrame;
     private EditText addressField;
     private TextView tabCounter;
     private LinearLayout addressRow;
@@ -136,9 +137,10 @@ public class MainActivity extends Activity {
 
         geckoView = new GeckoView(this);
         geckoView.setBackgroundColor(BG);
+        // The bottom browser controls cover this portion of the page.
         geckoView.setVerticalClipping(dp(50));
 
-        FrameLayout browserFrame = new FrameLayout(this);
+        browserFrame = new FrameLayout(this);
         browserFrame.setBackgroundColor(BG);
         browserFrame.addView(geckoView, new FrameLayout.LayoutParams(-1, -1));
 
@@ -183,7 +185,9 @@ public class MainActivity extends Activity {
                 new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         browserFrame.addView(failureOverlay, new FrameLayout.LayoutParams(-1, -1));
 
-        browserRoot.addView(browserFrame, new FrameLayout.LayoutParams(-1, -1));
+        FrameLayout.LayoutParams browserParams = new FrameLayout.LayoutParams(-1, -1);
+        browserParams.topMargin = dp(55);
+        browserRoot.addView(browserFrame, browserParams);
 
         topChrome = new LinearLayout(this);
         topChrome.setOrientation(LinearLayout.VERTICAL);
@@ -361,7 +365,11 @@ public class MainActivity extends Activity {
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (manager != null) manager.showSoftInput(addressField,
                 InputMethodManager.SHOW_IMPLICIT);
-        showAddressSuggestions(addressField.getText().toString());
+        addressField.post(() -> {
+            if (addressField.hasFocus()) {
+                showAddressSuggestions(addressField.getText().toString());
+            }
+        });
     }
 
     private void dismissAddressSuggestions() {
@@ -492,7 +500,9 @@ public class MainActivity extends Activity {
 
         suggestionPopup = new PopupWindow(panel,
                 getResources().getDisplayMetrics().widthPixels - dp(20),
-                WindowManager.LayoutParams.WRAP_CONTENT, true);
+                WindowManager.LayoutParams.WRAP_CONTENT, false);
+        suggestionPopup.setFocusable(false);
+        suggestionPopup.setTouchable(true);
         suggestionPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         suggestionPopup.setOutsideTouchable(true);
         suggestionPopup.setElevation(dp(18));
@@ -716,6 +726,7 @@ public class MainActivity extends Activity {
                 scrollAccumulator = 0f;
                 scrollDirection = 0;
                 animateAddressBar(true);
+                setBrowserContentTopOffset(true);
                 geckoView.setSession(newSession);
                 newSession.setActive(true);
                 newSession.setFocused(true);
@@ -1698,12 +1709,26 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void setBrowserContentTopOffset(boolean toolbarVisible) {
+        if (browserFrame == null) return;
+        FrameLayout.LayoutParams params =
+                (FrameLayout.LayoutParams) browserFrame.getLayoutParams();
+        int target = toolbarVisible ? dp(55) : 0;
+        if (params.topMargin != target) {
+            params.topMargin = target;
+            browserFrame.setLayoutParams(params);
+        }
+    }
+
     private void animateAddressBar(boolean show) {
         if (topChrome == null) return;
         if (show == !addressBarHidden && topChrome.getVisibility() == View.VISIBLE) return;
         if (!show && addressBarHidden) return;
 
         addressBarHidden = !show;
+        if (show) {
+            setBrowserContentTopOffset(true);
+        }
         if (addressAnimator != null) {
             addressAnimator.cancel();
             addressAnimator = null;
@@ -1743,7 +1768,10 @@ public class MainActivity extends Activity {
                 if (token != addressAnimationToken) return;
                 chrome.setTranslationY(endTranslation);
                 chrome.setAlpha(endAlpha);
-                if (!show) chrome.setVisibility(View.GONE);
+                if (!show) {
+                    chrome.setVisibility(View.GONE);
+                    setBrowserContentTopOffset(false);
+                }
                 addressAnimator = null;
             }
         });
