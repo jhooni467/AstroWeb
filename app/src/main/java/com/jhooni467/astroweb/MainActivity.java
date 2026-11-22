@@ -183,8 +183,13 @@ public class MainActivity extends Activity {
         retry.setGravity(Gravity.CENTER);
         retry.setPadding(dp(16), dp(10), dp(16), dp(10));
         retry.setOnClickListener(v -> {
-            recoveryAttempts = 0;
-            restartTab(activeTab, activeTab == null ? HOME_URL : activeTab.url);
+            if (activeTab != null) {
+                activeTab.recoveryAttempts = 0;
+                activeTab.recoveryScheduled = false;
+                restartTab(activeTab, activeTab.url);
+            } else {
+                createTab(HOME_URL);
+            }
         });
         failureContent.addView(retry);
         failureOverlay.addView(failureContent,
@@ -527,6 +532,10 @@ public class MainActivity extends Activity {
     }
 
     private void createTab(String url, boolean privateMode) {
+        if (tabs.size() >= 20) {
+            Toast.makeText(this, "Llegaste al límite de 20 pestañas", Toast.LENGTH_SHORT).show();
+            return;
+        }
         BrowserTab tab = new BrowserTab();
         tab.privateMode = privateMode;
         tab.url = url == null || url.isEmpty() ? HOME_URL : url;
@@ -877,6 +886,10 @@ public class MainActivity extends Activity {
     }
 
     private BrowserTab createWindowTab(String requestedUrl) {
+        if (tabs.size() >= 20) {
+            Toast.makeText(this, "Llegaste al límite de 20 pestañas", Toast.LENGTH_SHORT).show();
+            return null;
+        }
         BrowserTab tab = new BrowserTab();
         tab.privateMode = activeTab != null && activeTab.privateMode;
         tab.url = requestedUrl == null || requestedUrl.isEmpty() ? HOME_URL : requestedUrl;
@@ -899,13 +912,12 @@ public class MainActivity extends Activity {
             if (isFinishing() || !tabs.contains(tab) || tab.session == null) return;
             if (tab.session.isOpen()) {
                 activateTab(tab);
-            } else if (attempt < 15) {
+            } else if (attempt < 60) {
                 activateWindowTabWhenReady(tab, attempt + 1);
             } else {
-                Log.w(TAG, "New window session did not open in time");
-                tabs.remove(tab);
-                updateTabCounter();
-                persistTabsSnapshot();
+                // Keep the tab instead of silently deleting it. It may still be
+                // opening while Gecko is under startup or memory pressure.
+                Log.w(TAG, "New window session is taking longer than expected");
             }
         }, 80);
     }
@@ -1085,7 +1097,13 @@ public class MainActivity extends Activity {
                         float scale = Math.min(1f, (float) maxWidth / Math.max(1, bitmap.getWidth()));
                         int width = Math.max(1, Math.round(bitmap.getWidth() * scale));
                         int height = Math.max(1, Math.round(bitmap.getHeight() * scale));
-                        tab.thumbnail = Bitmap.createScaledBitmap(bitmap, width, height, true);
+                        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, width, height, true);
+                if (scaled != bitmap) bitmap.recycle();
+                if (tab.thumbnail != null && tab.thumbnail != scaled
+                        && !tab.thumbnail.isRecycled()) {
+                    tab.thumbnail.recycle();
+                }
+                tab.thumbnail = scaled;
                     } catch (RuntimeException imageError) {
                         Log.w(TAG, "Could not create tab preview", imageError);
                     }
@@ -1354,7 +1372,7 @@ public class MainActivity extends Activity {
         if (tab == null || !tabs.contains(tab)) return;
 
         if (tabs.size() == 1) {
-            tab.thumbnail = null;
+            recycleTabThumbnail(tab);
             tab.title = "Nueva pestaña";
             tab.serializedState = null;
             restartTab(tab, HOME_URL);
@@ -1370,7 +1388,7 @@ public class MainActivity extends Activity {
 
         GeckoSession old = tab.session;
         tab.session = null;
-        tab.thumbnail = null;
+        recycleTabThumbnail(tab);
         if (old != null) {
             try {
                 old.close();
@@ -1394,6 +1412,12 @@ public class MainActivity extends Activity {
         showTabsOverview();
     }
 
+    private void recycleTabThumbnail(BrowserTab tab) {
+        if (tab == null || tab.thumbnail == null) return;
+        if (!tab.thumbnail.isRecycled()) tab.thumbnail.recycle();
+        tab.thumbnail = null;
+    }
+
     private String shorten(String value, int max) {
         if (value == null) return "Nueva pestaña";
         if (value.length() <= max) return value;
@@ -1415,6 +1439,7 @@ public class MainActivity extends Activity {
         tabs.remove(closing);
         GeckoSession old = closing.session;
         closing.session = null;
+        recycleTabThumbnail(closing);
         if (old != null) {
             try { old.close(); }
             catch (RuntimeException error) { Log.w(TAG, "Tab close failed", error); }
@@ -2087,6 +2112,7 @@ public class MainActivity extends Activity {
                 catch (RuntimeException error) { Log.w(TAG, "Session close failed", error); }
                 tab.session = null;
             }
+            recycleTabThumbnail(tab);
         }
         tabs.clear();
         activeTab = null;
