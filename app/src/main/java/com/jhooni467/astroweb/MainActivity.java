@@ -51,6 +51,9 @@ import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebRequestError;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -58,7 +61,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** AstroWeb 0.11 — reliable tab closing and refreshed tab overview. */
+/** AstroWeb 0.12 — stable tab lifecycle and per-tab session recovery. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final String HOME_URL = "resource://android/assets/home.html";
@@ -90,16 +93,12 @@ public class MainActivity extends Activity {
     private float scrollAccumulator = 0f;
     private int scrollDirection = 0;
     private boolean addressBarHidden = false;
-    private String pendingSessionState;
     private ImageButton backButton;
     private ImageButton forwardButton;
     private ImageButton bookmarkButton;
     private FrameLayout failureOverlay;
     private BrowserTab activeTab;
     private SharedPreferences storage;
-    private boolean recoveryScheduled;
-    private int recoveryAttempts;
-
     private static class BrowserTab {
         GeckoSession session;
         String url = HOME_URL;
@@ -110,6 +109,8 @@ public class MainActivity extends Activity {
         boolean desktopMode;
         boolean canGoBack;
         boolean canGoForward;
+        boolean recoveryScheduled;
+        int recoveryAttempts;
     }
 
     @Override
@@ -118,10 +119,15 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BAR);
         storage = getSharedPreferences("astroweb_browser", MODE_PRIVATE);
-        pendingSessionState = storage.getString("session_state", null);
         buildInterface();
-        String lastUrl = storage.getString("last_url", HOME_URL);
-        createTab(lastUrl == null || lastUrl.isEmpty() ? HOME_URL : lastUrl);
+        if (!restoreTabsFromStorage()) {
+            BrowserTab initialTab = new BrowserTab();
+            String lastUrl = storage.getString("last_url", HOME_URL);
+            initialTab.url = lastUrl == null || lastUrl.isEmpty() ? HOME_URL : lastUrl;
+            initialTab.serializedState = storage.getString("session_state", null);
+            tabs.add(initialTab);
+            initializeTab(initialTab, initialTab.url, true);
+        }
     }
 
     private void buildInterface() {
@@ -523,21 +529,102 @@ public class MainActivity extends Activity {
     private void createTab(String url, boolean privateMode) {
         BrowserTab tab = new BrowserTab();
         tab.privateMode = privateMode;
-        if (!privateMode && pendingSessionState != null && !pendingSessionState.isEmpty()) {
-            tab.serializedState = pendingSessionState;
-            pendingSessionState = null;
-        }
+        tab.url = url == null || url.isEmpty() ? HOME_URL : url;
         tabs.add(tab);
-        initializeTab(tab, url, true);
+        persistTabsSnapshot();
+        initializeTab(tab, tab.url, true);
         updateTabCounter();
     }
 
+    private boolean restoreTabsFromStorage() {
+        String snapshot = storage.getString("tabs_snapshot", null);
+        if (snapshot == null || snapshot.isEmpty()) return false;
+        try {
+            JSONObject root = new JSONObject(snapshot);
+            JSONArray savedTabs = root.optJSONArray("tabs");
+            if (savedTabs == null || savedTabs.length() == 0) return false;
+
+            for (int i = 0; i < savedTabs.length(); i++) {
+                JSONObject saved = savedTabs.optJSONObject(i);
+                if (saved == null) continue;
+                BrowserTab tab = new BrowserTab();
+                tab.url = saved.optString("url", HOME_URL);
+                if (tab.url == null || tab.url.isEmpty()) tab.url = HOME_URL;
+                tab.title = saved.optString("title", "Nueva pestaña");
+                tab.desktopMode = saved.optBoolean("desktopMode", false);
+                tab.serializedState = saved.optString("sessionState", null);
+                tabs.add(tab);
+            }
+            if (tabs.isEmpty()) return false;
+
+            int activeIndex = root.optInt("activeIndex", 0);
+            if (activeIndex < 0 || activeIndex >= tabs.size()) activeIndex = 0;
+
+            // Restore only the selected session immediately. Other tabs retain their
+            // saved state and are opened on demand to reduce startup work and memory.
+            BrowserTab selected = tabs.get(activeIndex);
+            initializeTab(selected, selected.url, true);
+            updateTabCounter();
+            return true;
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Saved tab list could not be restored", error);
+            tabs.clear();
+            activeTab = null;
+            return false;
+        }
+    }
+
+    private void persistTabsSnapshot() {
+        if (storage == null) return;
+        try {
+            JSONArray savedTabs = new JSONArray();
+            int activeIndex = -1;
+            for (BrowserTab tab : tabs) {
+                if (tab == null || tab.privateMode) continue;
+                JSONObject saved = new JSONObject();
+                saved.put("url", tab.url == null ? HOME_URL : tab.url);
+                saved.put("title", tab.title == null ? "Nueva pestaña" : tab.title);
+                saved.put("desktopMode", tab.desktopMode);
+                if (tab.serializedState != null && !tab.serializedState.isEmpty()) {
+                    saved.put("sessionState", tab.serializedState);
+                }
+                savedTabs.put(saved);
+                if (tab == activeTab) activeIndex = savedTabs.length() - 1;
+            }
+
+            // Keep a sensible limit so a large browsing session cannot grow
+            // SharedPreferences without bounds.
+            while (savedTabs.length() > 20) {
+                savedTabs.remove(0);
+                if (activeIndex >= 0) activeIndex--;
+            }
+            if (activeIndex < 0 && savedTabs.length() > 0) activeIndex = 0;
+
+            JSONObject root = new JSONObject();
+            root.put("tabs", savedTabs);
+            root.put("activeIndex", activeIndex);
+            SharedPreferences.Editor editor = storage.edit()
+                    .putString("tabs_snapshot", root.toString());
+            if (activeTab != null && !activeTab.privateMode) {
+                editor.putString("last_url", activeTab.url);
+            }
+            editor.apply();
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Could not persist browser tabs", error);
+        }
+    }
+
     private void initializeTab(BrowserTab tab, String url, boolean activate) {
-        initializeTab(tab, url, activate, true);
+        initializeTab(tab, url, activate, true, true);
     }
 
     private void initializeTab(BrowserTab tab, String url, boolean activate,
             boolean loadInitialUri) {
+        initializeTab(tab, url, activate, loadInitialUri, true);
+    }
+
+    private void initializeTab(BrowserTab tab, String url, boolean activate,
+            boolean loadInitialUri, boolean openSession) {
         try {
             GeckoRuntime runtime = ((AstroWebApplication) getApplication()).getGeckoRuntime();
             GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
@@ -599,6 +686,7 @@ public class MainActivity extends Activity {
                             scrollDirection = 0;
                             animateAddressBar(true);
                         }
+                        persistTabsSnapshot();
                         if (tab == activeTab && addressField != null) {
                             addressField.setText(uri.equals(HOME_URL) ? "" : uri);
                             addressField.setSelection(addressField.getText().length());
@@ -664,7 +752,7 @@ public class MainActivity extends Activity {
                         runOnUiThread(() -> pageProgress.setVisibility(View.INVISIBLE));
                     }
                     if (success) {
-                        recoveryAttempts = 0;
+                        tab.recoveryAttempts = 0;
                         if (!tab.privateMode) addHistory(tab.url);
                         current.flushSessionState();
                         if (tab == activeTab) {
@@ -713,67 +801,76 @@ public class MainActivity extends Activity {
                     }
                 }
             });
-            newSession.open(runtime);
-            if (activate) {
-                if (activeTab != null && activeTab != tab && activeTab.session != null) {
-                    try {
-                        activeTab.session.setFocused(false);
-                        activeTab.session.setActive(false);
-                    } catch (RuntimeException ignored) { }
-                }
-                activeTab = tab;
-                lastScrollY = 0;
-                scrollAccumulator = 0f;
-                scrollDirection = 0;
-                animateAddressBar(true);
-                setBrowserContentTopOffset(true);
-                geckoView.setSession(newSession);
-                newSession.setActive(true);
-                newSession.setFocused(true);
-                newSession.setPriorityHint(GeckoSession.PRIORITY_HIGH);
-                geckoView.coverUntilFirstPaint(BG);
-                failureOverlay.setVisibility(View.GONE);
-                addressField.setText(tab.url.equals(HOME_URL) ? "" : tab.url);
-                clearAddressButton.setVisibility(tab.url.equals(HOME_URL) ? View.GONE : View.VISIBLE);
-                pageProgress.setVisibility(View.INVISIBLE);
-                updateNavigationButtons();
-                updateBookmarkButton();
-            } else {
-                newSession.setActive(false);
-                newSession.setFocused(false);
-                newSession.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
-            }
-            if (loadInitialUri && tab.serializedState != null && !tab.serializedState.isEmpty()) {
-                try {
-                    GeckoSession.SessionState savedState =
-                            GeckoSession.SessionState.fromString(tab.serializedState);
-                    if (savedState == null) {
-                        byte[] bytes = Base64.decode(tab.serializedState, Base64.DEFAULT);
-                        Parcel parcel = Parcel.obtain();
+            if (openSession) {
+                newSession.open(runtime);
+                if (activate) {
+                    if (activeTab != null && activeTab != tab && activeTab.session != null) {
                         try {
-                            parcel.unmarshall(bytes, 0, bytes.length);
-                            parcel.setDataPosition(0);
-                            savedState = GeckoSession.SessionState.CREATOR.createFromParcel(parcel);
-                        } finally {
-                            parcel.recycle();
-                        }
+                            activeTab.session.setFocused(false);
+                            activeTab.session.setActive(false);
+                        } catch (RuntimeException ignored) { }
                     }
-                    if (savedState != null) {
-                        newSession.restoreState(savedState);
-                    } else {
+                    activeTab = tab;
+                    lastScrollY = 0;
+                    scrollAccumulator = 0f;
+                    scrollDirection = 0;
+                    animateAddressBar(true);
+                    setBrowserContentTopOffset(true);
+                    geckoView.setSession(newSession);
+                    newSession.setActive(true);
+                    newSession.setFocused(true);
+                    newSession.setPriorityHint(GeckoSession.PRIORITY_HIGH);
+                    geckoView.coverUntilFirstPaint(BG);
+                    failureOverlay.setVisibility(View.GONE);
+                    addressField.setText(tab.url.equals(HOME_URL) ? "" : tab.url);
+                    clearAddressButton.setVisibility(tab.url.equals(HOME_URL) ? View.GONE : View.VISIBLE);
+                    pageProgress.setVisibility(View.INVISIBLE);
+                    updateNavigationButtons();
+                    updateBookmarkButton();
+                } else {
+                    newSession.setActive(false);
+                    newSession.setFocused(false);
+                    newSession.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
+                }
+                if (loadInitialUri && tab.serializedState != null && !tab.serializedState.isEmpty()) {
+                    try {
+                        GeckoSession.SessionState savedState =
+                                GeckoSession.SessionState.fromString(tab.serializedState);
+                        if (savedState == null) {
+                            byte[] bytes = Base64.decode(tab.serializedState, Base64.DEFAULT);
+                            Parcel parcel = Parcel.obtain();
+                            try {
+                                parcel.unmarshall(bytes, 0, bytes.length);
+                                parcel.setDataPosition(0);
+                                savedState = GeckoSession.SessionState.CREATOR.createFromParcel(parcel);
+                            } finally {
+                                parcel.recycle();
+                            }
+                        }
+                        if (savedState != null) {
+                            newSession.restoreState(savedState);
+                        } else {
+                            newSession.loadUri(tab.url);
+                        }
+                    } catch (Exception restoreError) {
+                        Log.w(TAG, "Could not restore previous browser session", restoreError);
+                        tab.serializedState = null;
                         newSession.loadUri(tab.url);
                     }
-                } catch (Exception restoreError) {
-                    Log.w(TAG, "Could not restore previous browser session", restoreError);
-                    tab.serializedState = null;
+                } else if (loadInitialUri) {
                     newSession.loadUri(tab.url);
                 }
-            } else if (loadInitialUri) {
-                newSession.loadUri(tab.url);
             }
-            updateTabCounter();
         } catch (Throwable error) {
             Log.e(TAG, "GeckoView initialization failed", error);
+            if (tab.session != null) {
+                try {
+                    if (tab.session.isOpen()) tab.session.close();
+                } catch (RuntimeException closeError) {
+                    Log.w(TAG, "Could not discard failed session", closeError);
+                }
+                tab.session = null;
+            }
             if (activate) showFailure("AstroWeb no pudo iniciarse",
                     "El motor del navegador no pudo arrancar. Inténtalo de nuevo.");
         }
@@ -784,20 +881,39 @@ public class MainActivity extends Activity {
         tab.privateMode = activeTab != null && activeTab.privateMode;
         tab.url = requestedUrl == null || requestedUrl.isEmpty() ? HOME_URL : requestedUrl;
         tabs.add(tab);
-        initializeTab(tab, tab.url, true, false);
+        // GeckoView opens this session itself after onNewSession returns it.
+        initializeTab(tab, tab.url, false, false, false);
         updateTabCounter();
         if (tab.session == null) {
             tabs.remove(tab);
             updateTabCounter();
             return null;
         }
+        persistTabsSnapshot();
+        activateWindowTabWhenReady(tab, 0);
         return tab;
+    }
+
+    private void activateWindowTabWhenReady(BrowserTab tab, int attempt) {
+        handler.postDelayed(() -> {
+            if (isFinishing() || !tabs.contains(tab) || tab.session == null) return;
+            if (tab.session.isOpen()) {
+                activateTab(tab);
+            } else if (attempt < 15) {
+                activateWindowTabWhenReady(tab, attempt + 1);
+            } else {
+                Log.w(TAG, "New window session did not open in time");
+                tabs.remove(tab);
+                updateTabCounter();
+                persistTabsSnapshot();
+            }
+        }, 80);
     }
 
     private void activateTab(BrowserTab tab) {
         if (tab == null) return;
         if (tab.session == null) {
-            restartTab(tab, tab.url);
+            initializeTab(tab, tab.url, true);
             return;
         }
         if (activeTab != null && activeTab != tab && activeTab.session != null) {
@@ -810,6 +926,7 @@ public class MainActivity extends Activity {
             } catch (RuntimeException ignored) { }
         }
         activeTab = tab;
+        persistTabsSnapshot();
         if (tab.url.equals(HOME_URL)) {
             lastScrollY = 0;
             scrollAccumulator = 0f;
@@ -841,25 +958,27 @@ public class MainActivity extends Activity {
             try { old.close(); }
             catch (RuntimeException error) { Log.w(TAG, "Session close failed", error); }
         }
-        tab.url = target == null || target.isEmpty() ? HOME_URL : target;
+        String nextUrl = target == null || target.isEmpty() ? HOME_URL : target;
+        if (!nextUrl.equals(tab.url)) tab.serializedState = null;
+        tab.url = nextUrl;
         if (tab == activeTab) failureOverlay.setVisibility(View.GONE);
         initializeTab(tab, tab.url, tab == activeTab);
     }
 
     private void handleEngineStopped(BrowserTab tab, GeckoSession stoppedSession) {
         runOnUiThread(() -> {
-            if (isFinishing() || tab.session != stoppedSession || recoveryScheduled) return;
-            recoveryScheduled = true;
-            if (recoveryAttempts < 1) {
-                recoveryAttempts++;
+            if (isFinishing() || tab.session != stoppedSession || tab.recoveryScheduled) return;
+            tab.recoveryScheduled = true;
+            if (tab.recoveryAttempts < 1) {
+                tab.recoveryAttempts++;
                 handler.postDelayed(() -> {
-                    recoveryScheduled = false;
-                    if (!isFinishing() && tab.session == stoppedSession) {
+                    tab.recoveryScheduled = false;
+                    if (!isFinishing() && tabs.contains(tab) && tab.session == stoppedSession) {
                         restartTab(tab, tab.url);
                     }
                 }, 850);
             } else {
-                recoveryScheduled = false;
+                tab.recoveryScheduled = false;
                 if (tab == activeTab) {
                     showFailure("El motor del navegador se detuvo",
                             "Reinicia esta pestaña para continuar.");
@@ -886,7 +1005,7 @@ public class MainActivity extends Activity {
         }
 
         activeTab.url = target;
-        if (!activeTab.privateMode) storage.edit().putString("last_url", target).apply();
+        persistTabsSnapshot();
         failureOverlay.setVisibility(View.GONE);
         pageProgress.setProgress(0);
         pageProgress.setVisibility(View.VISIBLE);
@@ -915,6 +1034,8 @@ public class MainActivity extends Activity {
             return;
         }
         activeTab.url = HOME_URL;
+        activeTab.serializedState = null;
+        persistTabsSnapshot();
         addressField.setText("");
         pageProgress.setVisibility(View.INVISIBLE);
         failureOverlay.setVisibility(View.GONE);
@@ -1235,6 +1356,7 @@ public class MainActivity extends Activity {
         if (tabs.size() == 1) {
             tab.thumbnail = null;
             tab.title = "Nueva pestaña";
+            tab.serializedState = null;
             restartTab(tab, HOME_URL);
             updateTabCounter();
             overviewDialog.dismiss();
@@ -1264,6 +1386,7 @@ public class MainActivity extends Activity {
         }
 
         updateTabCounter();
+        persistTabsSnapshot();
         overviewDialog.dismiss();
 
         // Refresh the existing overview directly. Do not recapture the active page here:
@@ -1280,7 +1403,11 @@ public class MainActivity extends Activity {
     private void closeActiveTab() {
         if (activeTab == null) return;
         if (tabs.size() == 1) {
+            activeTab.serializedState = null;
+            activeTab.title = "Nueva pestaña";
+            activeTab.thumbnail = null;
             restartTab(activeTab, HOME_URL);
+            persistTabsSnapshot();
             return;
         }
         int oldIndex = tabs.indexOf(activeTab);
@@ -1296,6 +1423,7 @@ public class MainActivity extends Activity {
         BrowserTab next = tabs.get(Math.max(0, Math.min(oldIndex - 1, tabs.size() - 1)));
         activateTab(next);
         updateTabCounter();
+        persistTabsSnapshot();
     }
 
     private void showBrowserMenu(View anchor) {
@@ -1709,15 +1837,12 @@ public class MainActivity extends Activity {
     }
 
     private void saveSessionState(BrowserTab tab, GeckoSession.SessionState state) {
-        if (tab == null || state == null || tab != activeTab || tab.privateMode) return;
+        if (tab == null || state == null || tab.privateMode || !tabs.contains(tab)) return;
         try {
             String serialized = state.toString();
             if (serialized == null || serialized.isEmpty()) return;
             tab.serializedState = serialized;
-            storage.edit()
-                    .putString("session_state", serialized)
-                    .putString("last_url", tab.url)
-                    .apply();
+            persistTabsSnapshot();
         } catch (RuntimeException error) {
             Log.w(TAG, "Could not persist browser session", error);
         }
@@ -1901,20 +2026,17 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
-        if (activeTab != null && activeTab.session != null) {
+        for (BrowserTab tab : tabs) {
+            if (tab.session == null) continue;
             try {
-                activeTab.session.flushSessionState();
-                activeTab.session.setFocused(false);
-                activeTab.session.setActive(false);
+                if (tab == activeTab) tab.session.setFocused(false);
+                tab.session.setActive(false);
+                tab.session.flushSessionState();
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not pause browser session cleanly", error);
             }
         }
-        if (activeTab != null && !activeTab.privateMode) {
-            storage.edit().putString("last_url", activeTab.url)
-                    .putString("session_state", activeTab.serializedState)
-                    .commit();
-        }
+        persistTabsSnapshot();
         super.onPause();
     }
 
