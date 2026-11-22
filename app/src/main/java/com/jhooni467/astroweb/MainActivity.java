@@ -688,6 +688,7 @@ public class MainActivity extends Activity {
                         Boolean hasUserGesture) {
                     runOnUiThread(() -> {
                         if (uri == null) return;
+                        if (!uri.equals(tab.url)) tab.serializedState = null;
                         tab.url = uri;
                         if (!tab.privateMode) storage.edit().putString("last_url", uri).apply();
                         if (uri.equals(HOME_URL)) {
@@ -1018,6 +1019,7 @@ public class MainActivity extends Activity {
             }
         }
 
+        if (!target.equals(activeTab.url)) activeTab.serializedState = null;
         activeTab.url = target;
         persistTabsSnapshot();
         failureOverlay.setVisibility(View.GONE);
@@ -1989,6 +1991,8 @@ public class MainActivity extends Activity {
     private void toggleDesktopMode() {
         if (activeTab == null || activeTab.session == null) return;
         activeTab.desktopMode = !activeTab.desktopMode;
+        activeTab.serializedState = null;
+        persistTabsSnapshot();
         try {
             GeckoSessionSettings settings = activeTab.session.getSettings();
             settings.setUserAgentMode(activeTab.desktopMode
