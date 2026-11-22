@@ -364,11 +364,14 @@ public class MainActivity extends Activity {
                 }
             });
 
-            newSession.setScrollDelegate((session, scrollX, scrollY) -> {
-                if (tab != activeTab) return;
-                if (scrollY > lastScrollY + dp(8)) animateAddressBar(false);
-                else if (scrollY < lastScrollY - dp(8)) animateAddressBar(true);
-                lastScrollY = Math.max(0, scrollY);
+            newSession.setScrollDelegate(new GeckoSession.ScrollDelegate() {
+                @Override
+                public void onScrollChanged(GeckoSession session, int scrollX, int scrollY) {
+                    if (tab != activeTab) return;
+                    if (scrollY > lastScrollY + dp(8)) animateAddressBar(false);
+                    else if (scrollY < lastScrollY - dp(8)) animateAddressBar(true);
+                    lastScrollY = Math.max(0, scrollY);
+                }
             });
             newSession.open(runtime);
             if (activate) {
@@ -581,7 +584,7 @@ public class MainActivity extends Activity {
         labels.add("Compartir página"); actions.add(this::shareCurrentPage);
         labels.add("Copiar dirección"); actions.add(this::copyCurrentAddress);
         labels.add("Abrir en otro navegador"); actions.add(this::openInExternalBrowser);
-        showBottomSheet("AstroWeb", labels, actions, null, null, null);
+        showBottomSheet("AstroWeb", labels, actions, null, null, null, null);
     }
 
     private void showBottomSheet(String title, List<String> labels, List<Runnable> actions,
