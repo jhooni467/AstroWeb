@@ -6,7 +6,8 @@
 
     <application
         android:name=".AstroWebApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
         android:label="AstroWeb"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
