@@ -72,7 +72,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** AstroWeb 0.12 — stable tab lifecycle and per-tab session recovery. */
+/** AstroWeb 0.14 — per-site permissions and an improved downloads library. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final int REQUEST_SAVE_PDF = 7101;
@@ -709,7 +709,7 @@ public class MainActivity extends Activity {
                 @Override
                 public GeckoResult<Integer> onContentPermissionRequest(GeckoSession current,
                         GeckoSession.PermissionDelegate.ContentPermission permission) {
-                    return requestContentSitePermission(permission);
+                    return requestContentSitePermission(permission, tab.privateMode);
                 }
 
                 @Override
@@ -717,7 +717,7 @@ public class MainActivity extends Activity {
                         GeckoSession.PermissionDelegate.MediaSource[] video,
                         GeckoSession.PermissionDelegate.MediaSource[] audio,
                         GeckoSession.PermissionDelegate.MediaCallback callback) {
-                    requestMediaSitePermission(uri, video, audio, callback);
+                    requestMediaSitePermission(uri, video, audio, callback, tab.privateMode);
                 }
             });
 
@@ -853,11 +853,10 @@ public class MainActivity extends Activity {
                         animateAddressBar(true);
                         return;
                     }
-                    if (Math.abs(delta) < Math.max(1, dp(1))) return;
+                    if (delta == 0) return;
 
-                    // Signed accumulation tolerates slow drags and tiny direction noise.
-                    // A real reversal gradually cancels the previous movement instead of
-                    // resetting the threshold on every small opposing scroll event.
+                    // Count every real scroll step, including tiny changes from slow drags.
+                    // Opposite movement cancels the accumulator naturally, filtering jitter.
                     scrollAccumulator += delta;
                     float hideThreshold = dp(42);
                     float showThreshold = -dp(30);
@@ -973,15 +972,27 @@ public class MainActivity extends Activity {
     }
 
     private GeckoResult<Integer> requestContentSitePermission(
-            GeckoSession.PermissionDelegate.ContentPermission permission) {
-        if (permission.value != GeckoSession.PermissionDelegate.ContentPermission.VALUE_PROMPT) {
-            return GeckoResult.fromValue(permission.value);
-        }
-        // Persistent storage grants cannot be revoked through GeckoView's public API.
-        // Keep this permission denied until AstroWeb has a proper per-site reset screen.
+            GeckoSession.PermissionDelegate.ContentPermission permission, boolean privateMode) {
+        // Persistent storage grants are intentionally blocked until GeckoView exposes a
+        // reliable per-site revoke/reset path for this permission.
         if (permission.permission == GeckoSession.PermissionDelegate.PERMISSION_PERSISTENT_STORAGE) {
             return GeckoResult.fromValue(
                     GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
+        }
+
+        String origin = getSiteOrigin(permission.uri);
+        String type = "content_" + permission.permission;
+        String savedDecision = privateMode ? null : readSitePermissionDecision(origin, type);
+        if ("allow".equals(savedDecision)) {
+            return GeckoResult.fromValue(
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW);
+        }
+        if ("deny".equals(savedDecision)) {
+            return GeckoResult.fromValue(
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
+        }
+        if (permission.value != GeckoSession.PermissionDelegate.ContentPermission.VALUE_PROMPT) {
+            return GeckoResult.fromValue(permission.value);
         }
 
         GeckoResult<Integer> result = new GeckoResult<>();
@@ -994,12 +1005,18 @@ public class MainActivity extends Activity {
             String site = getTabHost(permission.uri);
             AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Permiso del sitio")
-                    .setMessage(site + " solicita permiso para " + permissionLabel(permission.permission)
-                            + ".")
-                    .setPositiveButton("Permitir", (d, which) ->
-                            result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW))
-                    .setNegativeButton("Bloquear", (d, which) ->
-                            result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
+                    .setMessage(site + " solicita permiso para "
+                            + permissionLabel(permission.permission) + ".")
+                    .setPositiveButton("Permitir", (d, which) -> {
+                        if (!privateMode) saveSitePermissionDecision(origin, type, "allow");
+                        result.complete(
+                                GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW);
+                    })
+                    .setNegativeButton("Bloquear", (d, which) -> {
+                        if (!privateMode) saveSitePermissionDecision(origin, type, "deny");
+                        result.complete(
+                                GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
+                    })
                     .create();
             dialog.setOnCancelListener(d ->
                     result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY));
@@ -1050,7 +1067,7 @@ public class MainActivity extends Activity {
     private void requestMediaSitePermission(String uri,
             GeckoSession.PermissionDelegate.MediaSource[] video,
             GeckoSession.PermissionDelegate.MediaSource[] audio,
-            GeckoSession.PermissionDelegate.MediaCallback callback) {
+            GeckoSession.PermissionDelegate.MediaCallback callback, boolean privateMode) {
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) {
                 callback.reject();
@@ -1074,6 +1091,30 @@ public class MainActivity extends Activity {
                 return;
             }
 
+            String origin = getSiteOrigin(uri);
+            String cameraType = "media_camera";
+            String microphoneType = "media_microphone";
+            String cameraDecision = privateMode || !needsCamera ? null
+                    : readSitePermissionDecision(origin, cameraType);
+            String microphoneDecision = privateMode || !needsMicrophone ? null
+                    : readSitePermissionDecision(origin, microphoneType);
+
+            if ("deny".equals(cameraDecision) || "deny".equals(microphoneDecision)) {
+                callback.reject();
+                return;
+            }
+
+            boolean cameraAllowed = !needsCamera || "allow".equals(cameraDecision);
+            boolean microphoneAllowed = !needsMicrophone || "allow".equals(microphoneDecision);
+            if (cameraAllowed && microphoneAllowed) {
+                GeckoSession.PermissionDelegate.MediaSource videoSource =
+                        needsCamera ? video[0] : null;
+                GeckoSession.PermissionDelegate.MediaSource audioSource =
+                        needsMicrophone ? audio[0] : null;
+                callback.grant(videoSource, audioSource);
+                return;
+            }
+
             String requested = needsCamera && needsMicrophone ? "cámara y micrófono"
                     : needsCamera ? "cámara" : "micrófono";
             String site = getTabHost(uri);
@@ -1085,12 +1126,181 @@ public class MainActivity extends Activity {
             new AlertDialog.Builder(this)
                     .setTitle("Acceso al dispositivo")
                     .setMessage(site + " solicita usar tu " + requested + ".")
-                    .setPositiveButton("Permitir", (d, which) ->
-                            callback.grant(videoSource, audioSource))
-                    .setNegativeButton("Bloquear", (d, which) -> callback.reject())
+                    .setPositiveButton("Permitir", (d, which) -> {
+                        if (!privateMode) {
+                            if (needsCamera) {
+                                saveSitePermissionDecision(origin, cameraType, "allow");
+                            }
+                            if (needsMicrophone) {
+                                saveSitePermissionDecision(origin, microphoneType, "allow");
+                            }
+                        }
+                        callback.grant(videoSource, audioSource);
+                    })
+                    .setNegativeButton("Bloquear", (d, which) -> {
+                        if (!privateMode) {
+                            if (needsCamera) {
+                                saveSitePermissionDecision(origin, cameraType, "deny");
+                            }
+                            if (needsMicrophone) {
+                                saveSitePermissionDecision(origin, microphoneType, "deny");
+                            }
+                        }
+                        callback.reject();
+                    })
                     .setOnCancelListener(d -> callback.reject())
                     .show();
         });
+    }
+
+    private String getSiteOrigin(String url) {
+        if (url == null || url.isEmpty() || url.equals(HOME_URL)) return "";
+        try {
+            Uri parsed = Uri.parse(url);
+            String scheme = parsed.getScheme();
+            String host = parsed.getHost();
+            if (scheme == null || host == null || host.isEmpty()) return "";
+            String origin = scheme.toLowerCase(java.util.Locale.ROOT) + "://"
+                    + host.toLowerCase(java.util.Locale.ROOT);
+            if (parsed.getPort() != -1) origin += ":" + parsed.getPort();
+            return origin;
+        } catch (RuntimeException error) {
+            return "";
+        }
+    }
+
+    private String readSitePermissionDecision(String origin, String type) {
+        if (origin == null || origin.isEmpty()) return null;
+        try {
+            JSONObject decisions = new JSONObject(storage.getString("site_permissions", "{}"));
+            String value = decisions.optString(origin + "|" + type, "");
+            return value.isEmpty() ? null : value;
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Could not read site permission settings", error);
+            return null;
+        }
+    }
+
+    private void saveSitePermissionDecision(String origin, String type, String decision) {
+        if (origin == null || origin.isEmpty() || type == null || type.isEmpty()) return;
+        try {
+            JSONObject decisions = new JSONObject(storage.getString("site_permissions", "{}"));
+            String key = origin + "|" + type;
+            if (decision == null) decisions.remove(key);
+            else decisions.put(key, decision);
+            storage.edit().putString("site_permissions", decisions.toString()).apply();
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Could not save site permission settings", error);
+        }
+    }
+
+    private String sitePermissionLabel(String type) {
+        if ("media_camera".equals(type)) return "Cámara";
+        if ("media_microphone".equals(type)) return "Micrófono";
+        if (type != null && type.startsWith("content_")) {
+            try {
+                return permissionLabel(Integer.parseInt(type.substring("content_".length())));
+            } catch (NumberFormatException ignored) { }
+        }
+        return "Permiso del sitio";
+    }
+
+    private void showSitePermissionsDialog() {
+        String origin = getSiteOrigin(currentUrl());
+        if (origin.isEmpty()) {
+            Toast.makeText(this, "Abre un sitio web primero", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        JSONObject decisions;
+        try {
+            decisions = new JSONObject(storage.getString("site_permissions", "{}"));
+        } catch (JSONException error) {
+            decisions = new JSONObject();
+        }
+
+        List<String> labels = new ArrayList<>();
+        List<String> subtitles = new ArrayList<>();
+        List<Integer> icons = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        JSONArray keys = decisions.names();
+        if (keys != null) {
+            String prefix = origin + "|";
+            for (int i = 0; i < keys.length(); i++) {
+                String key = keys.optString(i, "");
+                if (!key.startsWith(prefix)) continue;
+                String type = key.substring(prefix.length());
+                String decision = decisions.optString(key, "deny");
+                labels.add(sitePermissionLabel(type));
+                subtitles.add(("allow".equals(decision) ? "Permitido" : "Bloqueado")
+                        + " · Toca para cambiar");
+                icons.add(R.drawable.ic_private);
+                actions.add(() -> showSitePermissionEditor(origin, type));
+            }
+        }
+
+        if (labels.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Permisos de " + getTabHost(currentUrl()))
+                    .setMessage("Este sitio todavía no tiene permisos guardados. "
+                            + "AstroWeb te preguntará cuando solicite acceso.")
+                    .setPositiveButton("Entendido", null)
+                    .show();
+            return;
+        }
+
+        showBottomSheet("Permisos · " + getTabHost(currentUrl()),
+                labels, subtitles, icons, actions,
+                null, null, "Restablecer permisos", () -> {
+                    new AlertDialog.Builder(this)
+                            .setTitle("Restablecer permisos")
+                            .setMessage("AstroWeb volverá a preguntar a este sitio cuando solicite acceso.")
+                            .setNegativeButton("Cancelar", null)
+                            .setPositiveButton("Restablecer", (dialog, which) -> {
+                                clearSitePermissionDecisions(origin);
+                                Toast.makeText(this, "Permisos restablecidos",
+                                        Toast.LENGTH_SHORT).show();
+                            })
+                            .show();
+                });
+    }
+
+    private void showSitePermissionEditor(String origin, String type) {
+        String label = sitePermissionLabel(type);
+        String current = readSitePermissionDecision(origin, type);
+        int selected = "allow".equals(current) ? 0 : "deny".equals(current) ? 1 : 2;
+        new AlertDialog.Builder(this)
+                .setTitle(label)
+                .setSingleChoiceItems(
+                        new String[]{"Permitir", "Bloquear", "Preguntar siempre"},
+                        selected, (dialog, which) -> {
+                            String decision = which == 0 ? "allow" : which == 1 ? "deny" : null;
+                            saveSitePermissionDecision(origin, type, decision);
+                            dialog.dismiss();
+                            Toast.makeText(this, "Preferencia actualizada",
+                                    Toast.LENGTH_SHORT).show();
+                            showSitePermissionsDialog();
+                        })
+                .setNegativeButton("Cerrar", null)
+                .show();
+    }
+
+    private void clearSitePermissionDecisions(String origin) {
+        try {
+            JSONObject current = new JSONObject(storage.getString("site_permissions", "{}"));
+            JSONObject remaining = new JSONObject();
+            JSONArray keys = current.names();
+            String prefix = origin + "|";
+            if (keys != null) {
+                for (int i = 0; i < keys.length(); i++) {
+                    String key = keys.optString(i, "");
+                    if (!key.startsWith(prefix)) remaining.put(key, current.get(key));
+                }
+            }
+            storage.edit().putString("site_permissions", remaining.toString()).apply();
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Could not reset site permissions", error);
+        }
     }
 
     private void handleExternalDownload(WebResponse response) {
@@ -1293,11 +1503,22 @@ public class MainActivity extends Activity {
 
         List<JSONObject> savedItems = new ArrayList<>();
         List<String> labels = new ArrayList<>();
+        List<String> subtitles = new ArrayList<>();
+        List<Integer> icons = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
         for (int i = entries.length() - 1; i >= 0; i--) {
             JSONObject item = entries.optJSONObject(i);
             if (item == null || item.optString("uri").isEmpty()) continue;
             savedItems.add(item);
             labels.add(item.optString("name", "Archivo guardado"));
+            String mime = item.optString("mime", "Archivo");
+            long savedAt = item.optLong("savedAt", 0L);
+            String when = savedAt > 0
+                    ? android.text.format.DateFormat.format("dd MMM yyyy · HH:mm", savedAt).toString()
+                    : "Fecha no disponible";
+            subtitles.add(mime + " · " + when);
+            icons.add(R.drawable.ic_history);
+            actions.add(() -> showDownloadActions(item));
         }
 
         if (savedItems.isEmpty()) {
@@ -1309,14 +1530,63 @@ public class MainActivity extends Activity {
             return;
         }
 
+        showBottomSheet("Descargas", labels, subtitles, icons, actions,
+                null, null, "Borrar lista", () ->
+                        new AlertDialog.Builder(this)
+                                .setTitle("Borrar lista de descargas")
+                                .setMessage("Solo se quitarán los registros de AstroWeb. "
+                                        + "Los archivos guardados no se eliminarán.")
+                                .setNegativeButton("Cancelar", null)
+                                .setPositiveButton("Borrar", (dialog, which) -> {
+                                    storage.edit().remove("downloads").apply();
+                                    Toast.makeText(this, "Lista de descargas borrada",
+                                            Toast.LENGTH_SHORT).show();
+                                })
+                                .show());
+    }
+
+    private void showDownloadActions(JSONObject item) {
+        String name = item.optString("name", "Archivo guardado");
         new AlertDialog.Builder(this)
-                .setTitle("Descargas")
-                .setItems(labels.toArray(new String[0]), (dialog, which) ->
-                        openSavedDownload(savedItems.get(which)))
-                .setNegativeButton("Borrar lista", (dialog, which) ->
-                        storage.edit().remove("downloads").apply())
-                .setPositiveButton("Cerrar", null)
+                .setTitle(name)
+                .setItems(new String[]{"Abrir archivo", "Quitar de la lista"}, (dialog, which) -> {
+                    if (which == 0) {
+                        openSavedDownload(item);
+                    } else {
+                        removeDownloadHistoryItem(item);
+                    }
+                })
+                .setNegativeButton("Cerrar", null)
                 .show();
+    }
+
+    private void removeDownloadHistoryItem(JSONObject target) {
+        try {
+            JSONArray entries = new JSONArray(storage.getString("downloads", "[]"));
+            JSONArray updated = new JSONArray();
+            String targetUri = target.optString("uri", "");
+            long targetTime = target.optLong("savedAt", -1L);
+            boolean removed = false;
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject item = entries.optJSONObject(i);
+                if (item == null) continue;
+                boolean same = !removed
+                        && targetUri.equals(item.optString("uri", ""))
+                        && targetTime == item.optLong("savedAt", -2L);
+                if (same) {
+                    removed = true;
+                } else {
+                    updated.put(item);
+                }
+            }
+            storage.edit().putString("downloads", updated.toString()).apply();
+            Toast.makeText(this, removed ? "Quitado de la lista" : "Registro no encontrado",
+                    Toast.LENGTH_SHORT).show();
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Could not remove download history entry", error);
+            Toast.makeText(this, "No se pudo actualizar la lista",
+                    Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void openSavedDownload(JSONObject item) {
@@ -1958,6 +2228,7 @@ public class MainActivity extends Activity {
         addTool(labels, icons, actions, "Abrir fuera", R.drawable.ic_external, this::openInExternalBrowser);
         addTool(labels, icons, actions, "Guardar PDF", R.drawable.ic_copy, this::saveCurrentPageAsPdf);
         addTool(labels, icons, actions, "Descargas", R.drawable.ic_history, this::showDownloadsDialog);
+        addTool(labels, icons, actions, "Permisos del sitio", R.drawable.ic_private, this::showSitePermissionsDialog);
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
