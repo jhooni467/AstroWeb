@@ -79,7 +79,7 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** AstroWeb 0.17 — global discovery trends and private, personalized search suggestions. */
+/** AstroWeb 0.18 — typo-tolerant suggestions and lighter, safer tab recovery. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final int REQUEST_SAVE_PDF = 7101;
@@ -110,6 +110,7 @@ public class MainActivity extends Activity {
     private ImageButton clearAddressButton;
     private PopupWindow suggestionPopup;
     private TextWatcher addressWatcher;
+    private Runnable suggestionUpdateRunnable;
     private ValueAnimator addressAnimator;
     private int addressAnimationToken = 0;
     private int lastScrollY = 0;
@@ -302,7 +303,7 @@ public class MainActivity extends Activity {
                 boolean hasText = text != null && text.length() > 0;
                 clearAddressButton.setVisibility(hasText ? View.VISIBLE : View.GONE);
                 if (addressField.hasFocus()) {
-                    showAddressSuggestions(text == null ? "" : text.toString());
+                    scheduleAddressSuggestions(text == null ? "" : text.toString());
                 }
             }
         };
@@ -436,7 +437,25 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void scheduleAddressSuggestions(String rawQuery) {
+        if (suggestionUpdateRunnable != null) {
+            handler.removeCallbacks(suggestionUpdateRunnable);
+        }
+        final String pendingQuery = rawQuery == null ? "" : rawQuery;
+        suggestionUpdateRunnable = () -> {
+            suggestionUpdateRunnable = null;
+            if (!isFinishing() && addressField != null && addressField.hasFocus()) {
+                showAddressSuggestions(pendingQuery);
+            }
+        };
+        handler.postDelayed(suggestionUpdateRunnable, 110L);
+    }
+
     private void dismissAddressSuggestions() {
+        if (suggestionUpdateRunnable != null) {
+            handler.removeCallbacks(suggestionUpdateRunnable);
+            suggestionUpdateRunnable = null;
+        }
         if (suggestionPopup != null) {
             suggestionPopup.dismiss();
             suggestionPopup = null;
@@ -695,6 +714,56 @@ public class MainActivity extends Activity {
         return tokens;
     }
 
+    private int editDistanceAtMost(String first, String second, int maxDistance) {
+        if (first == null || second == null) return maxDistance + 1;
+        if (Math.abs(first.length() - second.length()) > maxDistance) return maxDistance + 1;
+
+        int[] previous = new int[second.length() + 1];
+        int[] current = new int[second.length() + 1];
+        for (int j = 0; j <= second.length(); j++) previous[j] = j;
+
+        for (int i = 1; i <= first.length(); i++) {
+            current[0] = i;
+            for (int j = 1; j <= second.length(); j++) {
+                int cost = first.charAt(i - 1) == second.charAt(j - 1) ? 0 : 1;
+                current[j] = Math.min(
+                        Math.min(previous[j] + 1, current[j - 1] + 1),
+                        previous[j - 1] + cost);
+            }
+            int[] swap = previous;
+            previous = current;
+            current = swap;
+        }
+        return previous[second.length()];
+    }
+
+    private int relatedTokenScore(Set<String> queryTokens, Set<String> candidateTokens) {
+        int total = 0;
+        for (String queryToken : queryTokens) {
+            int best = 0;
+            for (String candidateToken : candidateTokens) {
+                if (queryToken.equals(candidateToken)) {
+                    best = 100;
+                    break;
+                }
+                if (candidateToken.startsWith(queryToken) || queryToken.startsWith(candidateToken)) {
+                    best = Math.max(best, 65);
+                    continue;
+                }
+                int shortest = Math.min(queryToken.length(), candidateToken.length());
+                if (shortest < 4) continue;
+                int allowedDistance = Math.max(queryToken.length(), candidateToken.length()) >= 8
+                        ? 2 : 1;
+                int distance = editDistanceAtMost(queryToken, candidateToken, allowedDistance);
+                if (distance <= allowedDistance) {
+                    best = Math.max(best, distance == 1 ? 55 : 42);
+                }
+            }
+            total += best;
+        }
+        return total;
+    }
+
     private boolean isSafeRecommendation(String value) {
         String normalized = normalizeSearchText(value);
         if (normalized.isEmpty()) return false;
@@ -839,13 +908,10 @@ public class MainActivity extends Activity {
                         - (now - lastUsed) / 86_400_000.0);
             } else {
                 Set<String> savedTokens = searchTokens(savedQuery);
-                int overlap = 0;
-                for (String token : queryTokens) {
-                    if (savedTokens.contains(token)) overlap++;
-                }
+                int matchScore = relatedTokenScore(queryTokens, savedTokens);
                 boolean startsWith = normalizedSaved.startsWith(normalizedQuery);
-                if (overlap == 0 && !startsWith) continue;
-                memory.score = overlap * 100.0 + (startsWith ? 35.0 : 0.0)
+                if (matchScore == 0 && !startsWith) continue;
+                memory.score = matchScore + (startsWith ? 35.0 : 0.0)
                         + count * 3.0
                         + Math.max(0, 14.0 - (now - lastUsed) / 86_400_000.0);
             }
@@ -878,9 +944,7 @@ public class MainActivity extends Activity {
                 Set<String> trendTokens = searchTokens(title);
                 boolean related = normalizedQuery.length() >= 3
                         && normalizeSearchText(title).contains(normalizedQuery);
-                for (String token : queryTokens) {
-                    if (trendTokens.contains(token)) related = true;
-                }
+                if (!related) related = relatedTokenScore(queryTokens, trendTokens) > 0;
                 if (!related) continue;
             }
             ranked.add(item);
@@ -1131,6 +1195,8 @@ public class MainActivity extends Activity {
 
     private void initializeTab(BrowserTab tab, String url, boolean activate,
             boolean loadInitialUri, boolean openSession) {
+        tab.recoveryScheduled = false;
+        tab.recoveryAttempts = 0;
         try {
             GeckoRuntime runtime = ((AstroWebApplication) getApplication()).getGeckoRuntime();
             GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
@@ -1293,9 +1359,6 @@ public class MainActivity extends Activity {
                         tab.recoveryAttempts = 0;
                         if (!tab.privateMode) addHistory(tab.url);
                         current.flushSessionState();
-                        if (tab == activeTab) {
-                            handler.postDelayed(() -> captureTabPreview(tab, null), 320);
-                        }
                     }
                 }
 
@@ -2126,7 +2189,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (activeTab != null && activeTab != tab && activeTab.session != null) {
-            captureTabPreview(activeTab, null);
+            captureVisibleTabPreview(activeTab, null);
             try {
                 activeTab.session.flushSessionState();
                 activeTab.session.setFocused(false);
@@ -2177,20 +2240,13 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (isFinishing() || tab.session != stoppedSession || tab.recoveryScheduled) return;
             tab.recoveryScheduled = true;
-            if (tab.recoveryAttempts < 1) {
-                tab.recoveryAttempts++;
-                handler.postDelayed(() -> {
-                    tab.recoveryScheduled = false;
-                    if (!isFinishing() && tabs.contains(tab) && tab.session == stoppedSession) {
-                        restartTab(tab, tab.url);
-                    }
-                }, 850);
+            tab.recoveryAttempts++;
+            if (tab == activeTab) {
+                pageProgress.setVisibility(View.INVISIBLE);
+                showFailure("La pestaña se detuvo",
+                        "AstroWeb no la recargará sola. Pulsa Reintentar para restaurarla.");
             } else {
-                tab.recoveryScheduled = false;
-                if (tab == activeTab) {
-                    showFailure("El motor del navegador se detuvo",
-                            "Reinicia esta pestaña para continuar.");
-                }
+                Log.w(TAG, "A background tab stopped; it will recover when selected");
             }
         });
     }
@@ -2212,6 +2268,10 @@ public class MainActivity extends Activity {
             }
         }
 
+        String detectedSearchQuery = extractSearchQueryFromUrl(target);
+        if (detectedSearchQuery != null) {
+            recordSearchQuery(detectedSearchQuery, activeTab.privateMode);
+        }
         if (!target.equals(activeTab.url)) activeTab.serializedState = null;
         activeTab.url = target;
         persistTabsSnapshot();
@@ -2278,77 +2338,7 @@ public class MainActivity extends Activity {
     }
 
     private void showTabsDialog() {
-        captureTabPreview(activeTab, this::showTabsOverview);
-    }
-
-    private void captureTabPreview(BrowserTab tab, Runnable afterCapture) {
-        if (tab == null || tab.session == null || geckoView == null) {
-            if (afterCapture != null) afterCapture.run();
-            return;
-        }
-
-        try {
-            // Capture the document from its origin, not the currently scrolled viewport.
-            // GeckoView 157+ supports this API; AstroWeb currently uses GeckoView 160.
-            geckoView.captureFullPage().accept(bitmap -> {
-                Bitmap topPreview = createTopPageTabPreview(bitmap);
-                if (topPreview != null) {
-                    storeTabPreview(tab, topPreview);
-                    if (afterCapture != null) afterCapture.run();
-                } else {
-                    captureVisibleTabPreview(tab, afterCapture);
-                }
-            }, error -> {
-                Log.w(TAG, "Full page tab preview unavailable; using visible viewport", error);
-                captureVisibleTabPreview(tab, afterCapture);
-            });
-        } catch (RuntimeException error) {
-            Log.w(TAG, "Full page tab preview failed; using visible viewport", error);
-            captureVisibleTabPreview(tab, afterCapture);
-        }
-    }
-
-    private Bitmap createTopPageTabPreview(Bitmap fullPage) {
-        if (fullPage == null || fullPage.isRecycled()) return null;
-        try {
-            int screenWidthDp = Math.max(1, getResources().getConfiguration().screenWidthDp);
-            int columns = screenWidthDp >= 960 ? 4 : (screenWidthDp >= 650 ? 3 : 2);
-            float cardWidthDp = Math.max(1f,
-                    (screenWidthDp - 32f - 14f * (columns - 1)) / columns);
-            float targetAspect = cardWidthDp / 210f;
-
-            int sourceWidth = fullPage.getWidth();
-            int sourceHeight = fullPage.getHeight();
-            if (sourceWidth <= 0 || sourceHeight <= 0) return null;
-
-            // Crop from y=0, keeping the top of the page visible in the tab card.
-            int cropHeight = Math.max(1, Math.min(sourceHeight,
-                    Math.round(sourceWidth / targetAspect)));
-            int outputWidth = Math.max(1, Math.min(dp(360), sourceWidth));
-            int outputHeight = Math.max(1, Math.round(outputWidth / targetAspect));
-
-            Bitmap preview = Bitmap.createBitmap(outputWidth, outputHeight,
-                    Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas canvas = new android.graphics.Canvas(preview);
-            canvas.drawColor(Color.rgb(22, 28, 24));
-            android.graphics.Paint paint = new android.graphics.Paint(
-                    android.graphics.Paint.FILTER_BITMAP_FLAG
-                            | android.graphics.Paint.DITHER_FLAG);
-
-            float contentHeight = Math.min(outputHeight,
-                    outputWidth * (float) cropHeight / sourceWidth);
-            android.graphics.Rect sourceRect =
-                    new android.graphics.Rect(0, 0, sourceWidth, cropHeight);
-            android.graphics.Rect destinationRect = new android.graphics.Rect(
-                    0, 0, outputWidth, Math.max(1, Math.round(contentHeight)));
-            canvas.drawBitmap(fullPage, sourceRect, destinationRect, paint);
-            return preview;
-        } catch (RuntimeException | OutOfMemoryError error) {
-            Log.w(TAG, "Could not crop full page for tab preview", error);
-            return null;
-        } finally {
-            if (!fullPage.isRecycled()) fullPage.recycle();
-        }
+        captureVisibleTabPreview(activeTab, this::showTabsOverview);
     }
 
     private void captureVisibleTabPreview(BrowserTab tab, Runnable afterCapture) {
