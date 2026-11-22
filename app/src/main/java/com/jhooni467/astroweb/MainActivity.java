@@ -1808,34 +1808,117 @@ public class MainActivity extends Activity {
             if (afterCapture != null) afterCapture.run();
             return;
         }
+
+        try {
+            // Capture the document from its origin, not the currently scrolled viewport.
+            // GeckoView 157+ supports this API; AstroWeb currently uses GeckoView 160.
+            geckoView.captureFullPage().accept(bitmap -> {
+                Bitmap topPreview = createTopPageTabPreview(bitmap);
+                if (topPreview != null) {
+                    storeTabPreview(tab, topPreview);
+                    if (afterCapture != null) afterCapture.run();
+                } else {
+                    captureVisibleTabPreview(tab, afterCapture);
+                }
+            }, error -> {
+                Log.w(TAG, "Full page tab preview unavailable; using visible viewport", error);
+                captureVisibleTabPreview(tab, afterCapture);
+            });
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Full page tab preview failed; using visible viewport", error);
+            captureVisibleTabPreview(tab, afterCapture);
+        }
+    }
+
+    private Bitmap createTopPageTabPreview(Bitmap fullPage) {
+        if (fullPage == null || fullPage.isRecycled()) return null;
+        try {
+            int screenWidthDp = Math.max(1, getResources().getConfiguration().screenWidthDp);
+            int columns = screenWidthDp >= 960 ? 4 : (screenWidthDp >= 650 ? 3 : 2);
+            float cardWidthDp = Math.max(1f,
+                    (screenWidthDp - 32f - 14f * (columns - 1)) / columns);
+            float targetAspect = cardWidthDp / 210f;
+
+            int sourceWidth = fullPage.getWidth();
+            int sourceHeight = fullPage.getHeight();
+            if (sourceWidth <= 0 || sourceHeight <= 0) return null;
+
+            // Crop from y=0, keeping the top of the page visible in the tab card.
+            int cropHeight = Math.max(1, Math.min(sourceHeight,
+                    Math.round(sourceWidth / targetAspect)));
+            int outputWidth = Math.max(1, Math.min(dp(360), sourceWidth));
+            int outputHeight = Math.max(1, Math.round(outputWidth / targetAspect));
+
+            Bitmap preview = Bitmap.createBitmap(outputWidth, outputHeight,
+                    Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas = new android.graphics.Canvas(preview);
+            canvas.drawColor(Color.rgb(22, 28, 24));
+            android.graphics.Paint paint = new android.graphics.Paint(
+                    android.graphics.Paint.FILTER_BITMAP_FLAG
+                            | android.graphics.Paint.DITHER_FLAG);
+
+            float contentHeight = Math.min(outputHeight,
+                    outputWidth * (float) cropHeight / sourceWidth);
+            android.graphics.Rect sourceRect =
+                    new android.graphics.Rect(0, 0, sourceWidth, cropHeight);
+            android.graphics.Rect destinationRect = new android.graphics.Rect(
+                    0, 0, outputWidth, Math.max(1, Math.round(contentHeight)));
+            canvas.drawBitmap(fullPage, sourceRect, destinationRect, paint);
+            return preview;
+        } catch (RuntimeException | OutOfMemoryError error) {
+            Log.w(TAG, "Could not crop full page for tab preview", error);
+            return null;
+        } finally {
+            if (!fullPage.isRecycled()) fullPage.recycle();
+        }
+    }
+
+    private void captureVisibleTabPreview(BrowserTab tab, Runnable afterCapture) {
+        if (tab == null || tab.session == null || geckoView == null) {
+            if (afterCapture != null) afterCapture.run();
+            return;
+        }
         try {
             geckoView.capturePixels().accept(bitmap -> {
-                if (bitmap != null && !bitmap.isRecycled()) {
-                    try {
-                        int maxWidth = dp(360);
-                        float scale = Math.min(1f, (float) maxWidth / Math.max(1, bitmap.getWidth()));
-                        int width = Math.max(1, Math.round(bitmap.getWidth() * scale));
-                        int height = Math.max(1, Math.round(bitmap.getHeight() * scale));
-                        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, width, height, true);
-                if (scaled != bitmap) bitmap.recycle();
-                if (tab.thumbnail != null && tab.thumbnail != scaled
-                        && !tab.thumbnail.isRecycled()) {
-                    tab.thumbnail.recycle();
-                }
-                tab.thumbnail = scaled;
-                    } catch (RuntimeException imageError) {
-                        Log.w(TAG, "Could not create tab preview", imageError);
-                    }
-                }
+                Bitmap scaled = scaleVisibleTabPreview(bitmap);
+                if (scaled != null) storeTabPreview(tab, scaled);
                 if (afterCapture != null) afterCapture.run();
             }, error -> {
-                Log.w(TAG, "Tab preview capture unavailable", error);
+                Log.w(TAG, "Visible tab preview unavailable", error);
                 if (afterCapture != null) afterCapture.run();
             });
         } catch (RuntimeException error) {
-            Log.w(TAG, "Tab preview capture failed", error);
+            Log.w(TAG, "Visible tab preview failed", error);
             if (afterCapture != null) afterCapture.run();
         }
+    }
+
+    private Bitmap scaleVisibleTabPreview(Bitmap bitmap) {
+        if (bitmap == null || bitmap.isRecycled()) return null;
+        try {
+            int maxWidth = dp(360);
+            float scale = Math.min(1f, (float) maxWidth / Math.max(1, bitmap.getWidth()));
+            int width = Math.max(1, Math.round(bitmap.getWidth() * scale));
+            int height = Math.max(1, Math.round(bitmap.getHeight() * scale));
+            return Bitmap.createScaledBitmap(bitmap, width, height, true);
+        } catch (RuntimeException | OutOfMemoryError error) {
+            Log.w(TAG, "Could not scale visible tab preview", error);
+            return null;
+        } finally {
+            if (!bitmap.isRecycled()) bitmap.recycle();
+        }
+    }
+
+    private void storeTabPreview(BrowserTab tab, Bitmap preview) {
+        if (preview == null || preview.isRecycled()) return;
+        if (tab == null || !tabs.contains(tab)) {
+            preview.recycle();
+            return;
+        }
+        if (tab.thumbnail != null && tab.thumbnail != preview && !tab.thumbnail.isRecycled()) {
+            tab.thumbnail.recycle();
+        }
+        tab.thumbnail = preview;
     }
 
     private void showTabsOverview() {
