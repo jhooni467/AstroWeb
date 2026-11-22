@@ -499,7 +499,9 @@ public class MainActivity extends Activity {
                     R.drawable.ic_search));
         }
 
-        List<SearchMemory> personal = getPersonalSearchSuggestions(query, 4);
+        // Private tabs may use public trends, but never reveal personal search memory.
+        List<SearchMemory> personal = activeTab != null && !activeTab.privateMode
+                ? getPersonalSearchSuggestions(query, 4) : new ArrayList<>();
         if (!personal.isEmpty()) {
             String section = query.isEmpty()
                     ? "TUS BÚSQUEDAS" : "RELACIONADAS CON TUS BÚSQUEDAS";
@@ -705,7 +707,8 @@ public class MainActivity extends Activity {
                 "metanfetamina", "drogas", "suicide", "suicidio", "self harm",
                 "autolesion", "weapon", "weapons", "firearm", "firearms", "guns",
                 "rifle", "pistola", "pistolas", "armas", "explosivo", "explosivos",
-                "bomb", "grenade", "prostitucion", "escort", "sexo"
+                "bomb", "grenade", "prostitucion", "escort", "sexo",
+                "xxx", "18+", "contenido adulto", "adult content"
         };
         for (String term : blocked) {
             if (normalized.contains(term)) return false;
