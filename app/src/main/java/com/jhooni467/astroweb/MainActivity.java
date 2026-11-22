@@ -3,6 +3,7 @@ package com.jhooni467.astroweb;
 import android.app.Activity;
 import android.animation.ValueAnimator;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -21,6 +22,8 @@ import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -527,19 +530,16 @@ public class MainActivity extends Activity {
             createTab(HOME_URL);
             return;
         }
-        String[] labels = new String[tabs.size()];
-        for (int i = 0; i < tabs.size(); i++) {
-            BrowserTab tab = tabs.get(i);
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        for (BrowserTab tab : new ArrayList<>(tabs)) {
             String label = tab.url.equals(HOME_URL) ? "Nueva pestaña" : tab.url;
-            labels[i] = (tab == activeTab ? "✓  " : "") + shorten(label, 43);
+            labels.add((tab == activeTab ? "✓   " : "") + shorten(label, 48));
+            actions.add(() -> activateTab(tab));
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Pestañas abiertas · " + tabs.size())
-                .setItems(labels, (dialog, which) -> activateTab(tabs.get(which)))
-                .setPositiveButton("Nueva pestaña", (dialog, which) -> createTab(HOME_URL))
-                .setNeutralButton("Cerrar actual", (dialog, which) -> closeActiveTab())
-                .setNegativeButton("Cancelar", null)
-                .show();
+        showBottomSheet("Pestañas · " + tabs.size(), labels, actions,
+                "Nueva pestaña", () -> createTab(HOME_URL),
+                "Cerrar pestaña actual", this::closeActiveTab);
     }
 
     private String shorten(String value, int max) {
@@ -570,38 +570,114 @@ public class MainActivity extends Activity {
     }
 
     private void showBrowserMenu(View anchor) {
-        PopupMenu popup = new PopupMenu(this, anchor);
-        popup.getMenu().add("Nueva pestaña").setOnMenuItemClickListener(item -> {
-            createTab(HOME_URL);
-            return true;
-        });
-        popup.getMenu().add("Atrás").setOnMenuItemClickListener(item -> { goBack(); return true; });
-        popup.getMenu().add("Adelante").setOnMenuItemClickListener(item -> { goForward(); return true; });
-        popup.getMenu().add("Recargar").setOnMenuItemClickListener(item -> {
-            reloadPage();
-            return true;
-        });
-        popup.getMenu().add("Marcadores").setOnMenuItemClickListener(item -> {
-            showBookmarksDialog();
-            return true;
-        });
-        popup.getMenu().add("Historial").setOnMenuItemClickListener(item -> {
-            showHistoryDialog();
-            return true;
-        });
-        popup.getMenu().add("Compartir página").setOnMenuItemClickListener(item -> {
-            shareCurrentPage();
-            return true;
-        });
-        popup.getMenu().add("Copiar dirección").setOnMenuItemClickListener(item -> {
-            copyCurrentAddress();
-            return true;
-        });
-        popup.getMenu().add("Abrir en otro navegador").setOnMenuItemClickListener(item -> {
-            openInExternalBrowser();
-            return true;
-        });
-        popup.show();
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        labels.add("Nueva pestaña"); actions.add(() -> createTab(HOME_URL));
+        labels.add("Atrás"); actions.add(this::goBack);
+        labels.add("Adelante"); actions.add(this::goForward);
+        labels.add("Recargar"); actions.add(this::reloadPage);
+        labels.add("Marcadores"); actions.add(this::showBookmarksDialog);
+        labels.add("Historial"); actions.add(this::showHistoryDialog);
+        labels.add("Compartir página"); actions.add(this::shareCurrentPage);
+        labels.add("Copiar dirección"); actions.add(this::copyCurrentAddress);
+        labels.add("Abrir en otro navegador"); actions.add(this::openInExternalBrowser);
+        showBottomSheet("AstroWeb", labels, actions, null, null, null);
+    }
+
+    private void showBottomSheet(String title, List<String> labels, List<Runnable> actions,
+            String primaryLabel, Runnable primaryAction,
+            String secondaryLabel, Runnable secondaryAction) {
+        Dialog dialog = new Dialog(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(20), dp(12), dp(20), dp(18));
+        GradientDrawable surface = new GradientDrawable();
+        surface.setColor(Color.rgb(34, 41, 35));
+        surface.setCornerRadii(new float[]{dp(22),dp(22),dp(22),dp(22),dp(0),dp(0),dp(0),dp(0)});
+        panel.setBackground(surface);
+
+        View handle = new View(this);
+        GradientDrawable handleBg = new GradientDrawable();
+        handleBg.setColor(Color.rgb(112, 125, 111));
+        handleBg.setCornerRadius(dp(4));
+        handle.setBackground(handleBg);
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(34), dp(4));
+        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+        handleParams.bottomMargin = dp(15);
+        panel.addView(handle, handleParams);
+
+        TextView heading = new TextView(this);
+        heading.setText(title);
+        heading.setTextColor(TEXT);
+        heading.setTextSize(18);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setPadding(dp(2), dp(3), dp(2), dp(13));
+        panel.addView(heading);
+
+        for (int i = 0; i < labels.size(); i++) {
+            final int index = i;
+            TextView item = new TextView(this);
+            item.setText(labels.get(i));
+            item.setTextColor(TEXT);
+            item.setTextSize(15);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setPadding(dp(10), 0, dp(10), 0);
+            item.setMinHeight(dp(48));
+            item.setBackgroundResource(android.R.drawable.list_selector_background);
+            item.setOnClickListener(v -> {
+                dialog.dismiss();
+                actions.get(index).run();
+            });
+            panel.addView(item, new LinearLayout.LayoutParams(-1, dp(48)));
+            if (i < labels.size() - 1) {
+                View divider = new View(this);
+                divider.setBackgroundColor(DIVIDER);
+                panel.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+            }
+        }
+
+        if (primaryLabel != null && primaryAction != null) {
+            TextView primary = sheetAction(primaryLabel, true);
+            primary.setOnClickListener(v -> { dialog.dismiss(); primaryAction.run(); });
+            LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(48));
+            p.topMargin = dp(12);
+            panel.addView(primary, p);
+        }
+        if (secondaryLabel != null && secondaryAction != null) {
+            TextView secondary = sheetAction(secondaryLabel, false);
+            secondary.setOnClickListener(v -> { dialog.dismiss(); secondaryAction.run(); });
+            panel.addView(secondary, new LinearLayout.LayoutParams(-1, dp(48)));
+        }
+
+        dialog.setContentView(panel);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams params = window.getAttributes();
+            params.width = WindowManager.LayoutParams.MATCH_PARENT;
+            params.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            params.gravity = Gravity.BOTTOM;
+            params.dimAmount = 0.48f;
+            window.setAttributes(params);
+        }
+        dialog.show();
+        if (window != null) window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT);
+    }
+
+    private TextView sheetAction(String label, boolean primary) {
+        TextView action = new TextView(this);
+        action.setText(label);
+        action.setTextSize(14);
+        action.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        action.setGravity(Gravity.CENTER);
+        action.setTextColor(primary ? Color.rgb(25, 32, 26) : TEXT);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(14));
+        bg.setColor(primary ? ACCENT : Color.rgb(49, 58, 50));
+        action.setBackground(bg);
+        return action;
     }
 
     private void toggleBookmark() {
