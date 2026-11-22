@@ -45,12 +45,20 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.IOException;
+
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebRequestError;
+import org.mozilla.geckoview.WebResponse;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -60,10 +68,16 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** AstroWeb 0.12 — stable tab lifecycle and per-tab session recovery. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
+    private static final int REQUEST_SAVE_PDF = 7101;
+    private static final int REQUEST_SAVE_DOWNLOAD = 7102;
+    private static final int REQUEST_ANDROID_SITE_PERMISSION = 7103;
     private static final String HOME_URL = "resource://android/assets/home.html";
     private static final int BG = Color.rgb(19, 23, 20);
     private static final int BAR = Color.rgb(27, 33, 28);
@@ -99,6 +113,13 @@ public class MainActivity extends Activity {
     private FrameLayout failureOverlay;
     private BrowserTab activeTab;
     private SharedPreferences storage;
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
+    private File pendingPdfFile;
+    private InputStream pendingDownloadStream;
+    private String pendingDownloadName;
+    private String pendingDownloadMime;
+    private GeckoSession.PermissionDelegate.Callback pendingAndroidPermissionCallback;
+    private boolean ignoreNextScrollUpdate = true;
     private static class BrowserTab {
         GeckoSession session;
         String url = HOME_URL;
@@ -671,6 +692,33 @@ public class MainActivity extends Activity {
                     Log.w(TAG, "Gecko content process was killed");
                     handleEngineStopped(tab, killedSession);
                 }
+
+                @Override
+                public void onExternalResponse(GeckoSession current, WebResponse response) {
+                    handleExternalDownload(response);
+                }
+            });
+
+            newSession.setPermissionDelegate(new GeckoSession.PermissionDelegate() {
+                @Override
+                public void onAndroidPermissionsRequest(GeckoSession current, String[] permissions,
+                        GeckoSession.PermissionDelegate.Callback callback) {
+                    requestAndroidSitePermissions(permissions, callback);
+                }
+
+                @Override
+                public GeckoResult<Integer> onContentPermissionRequest(GeckoSession current,
+                        GeckoSession.PermissionDelegate.ContentPermission permission) {
+                    return requestContentSitePermission(permission);
+                }
+
+                @Override
+                public void onMediaPermissionRequest(GeckoSession current, String uri,
+                        GeckoSession.PermissionDelegate.MediaSource[] video,
+                        GeckoSession.PermissionDelegate.MediaSource[] audio,
+                        GeckoSession.PermissionDelegate.MediaCallback callback) {
+                    requestMediaSitePermission(uri, video, audio, callback);
+                }
             });
 
             newSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
@@ -695,6 +743,7 @@ public class MainActivity extends Activity {
                             lastScrollY = 0;
                             scrollAccumulator = 0f;
                             scrollDirection = 0;
+                            ignoreNextScrollUpdate = true;
                             animateAddressBar(true);
                         }
                         persistTabsSnapshot();
@@ -785,34 +834,48 @@ public class MainActivity extends Activity {
                     if (tab != activeTab || addressField.hasFocus()
                             || (suggestionPopup != null && suggestionPopup.isShowing())
                             || (geckoView != null && geckoView.shouldPinOnScreen())) return;
-                    int delta = scrollY - lastScrollY;
-                    lastScrollY = Math.max(0, scrollY);
 
-                    if (scrollY <= 3) {
+                    int currentY = Math.max(0, scrollY);
+                    if (ignoreNextScrollUpdate) {
+                        lastScrollY = currentY;
+                        scrollAccumulator = 0f;
+                        scrollDirection = 0;
+                        ignoreNextScrollUpdate = false;
+                        return;
+                    }
+
+                    int delta = currentY - lastScrollY;
+                    lastScrollY = currentY;
+
+                    if (currentY <= dp(2)) {
                         scrollAccumulator = 0f;
                         scrollDirection = 0;
                         animateAddressBar(true);
                         return;
                     }
-                    if (delta == 0) return;
+                    if (Math.abs(delta) < Math.max(1, dp(1))) return;
 
-                    int direction = delta > 0 ? 1 : -1;
-                    if (direction != scrollDirection) {
-                        scrollAccumulator = 0f;
-                        scrollDirection = direction;
-                    }
-                    scrollAccumulator += Math.abs(delta);
+                    // Signed accumulation tolerates slow drags and tiny direction noise.
+                    // A real reversal gradually cancels the previous movement instead of
+                    // resetting the threshold on every small opposing scroll event.
+                    scrollAccumulator += delta;
+                    float hideThreshold = dp(42);
+                    float showThreshold = -dp(30);
+                    scrollAccumulator = Math.max(showThreshold,
+                            Math.min(hideThreshold, scrollAccumulator));
 
-                    if (direction > 0 && !addressBarHidden && scrollAccumulator >= 34f) {
+                    if (!addressBarHidden && scrollAccumulator >= hideThreshold) {
                         scrollAccumulator = 0f;
                         animateAddressBar(false);
-                    } else if (direction < 0 && addressBarHidden && scrollAccumulator >= 22f) {
+                    } else if (addressBarHidden && scrollAccumulator <= showThreshold) {
                         scrollAccumulator = 0f;
                         animateAddressBar(true);
                     }
                 }
             });
-            if (openSession) {
+
+
+                if (openSession) {
                 newSession.open(runtime);
                 if (activate) {
                     if (activeTab != null && activeTab != tab && activeTab.session != null) {
@@ -827,6 +890,7 @@ public class MainActivity extends Activity {
                     lastScrollY = 0;
                     scrollAccumulator = 0f;
                     scrollDirection = 0;
+                    ignoreNextScrollUpdate = true;
                     animateAddressBar(true);
                     setBrowserContentTopOffset(true);
                     geckoView.setSession(newSession);
@@ -889,6 +953,367 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String permissionLabel(int permission) {
+        switch (permission) {
+            case GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION:
+                return "tu ubicación";
+            case GeckoSession.PermissionDelegate.PERMISSION_DESKTOP_NOTIFICATION:
+                return "mostrar notificaciones";
+            case GeckoSession.PermissionDelegate.PERMISSION_PERSISTENT_STORAGE:
+                return "guardar datos del sitio";
+            case GeckoSession.PermissionDelegate.PERMISSION_XR:
+                return "usar funciones de realidad virtual";
+            case GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_AUDIBLE:
+                return "reproducir audio automáticamente";
+            case GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE:
+                return "reproducir contenido automáticamente";
+            case GeckoSession.PermissionDelegate.PERMISSION_LOCAL_NETWORK_ACCESS:
+                return "acceder a dispositivos de tu red local";
+            case GeckoSession.PermissionDelegate.PERMISSION_LOCAL_DEVICE_ACCESS:
+                return "acceder a servicios de este dispositivo";
+            default:
+                return "usar una función del dispositivo";
+        }
+    }
+
+    private GeckoResult<Integer> requestContentSitePermission(
+            GeckoSession.PermissionDelegate.ContentPermission permission) {
+        if (permission.value != GeckoSession.PermissionDelegate.ContentPermission.VALUE_PROMPT) {
+            return GeckoResult.fromValue(permission.value);
+        }
+
+        GeckoResult<Integer> result = new GeckoResult<>();
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
+                return;
+            }
+
+            String site = getTabHost(permission.uri);
+            AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle("Permiso del sitio")
+                    .setMessage(site + " solicita permiso para " + permissionLabel(permission.permission)
+                            + ".")
+                    .setPositiveButton("Permitir", (d, which) ->
+                            result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW))
+                    .setNegativeButton("Bloquear", (d, which) ->
+                            result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
+                    .create();
+            dialog.setOnCancelListener(d ->
+                    result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY));
+            dialog.setOnShowListener(d -> permission.notifyShown());
+            dialog.show();
+        });
+        return result;
+    }
+
+    private void requestAndroidSitePermissions(String[] permissions,
+            GeckoSession.PermissionDelegate.Callback callback) {
+        if (permissions == null || permissions.length == 0) {
+            callback.grant();
+            return;
+        }
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                callback.reject();
+                return;
+            }
+            if (pendingAndroidPermissionCallback != null) {
+                pendingAndroidPermissionCallback.reject();
+            }
+            pendingAndroidPermissionCallback = callback;
+            try {
+                requestPermissions(permissions, REQUEST_ANDROID_SITE_PERMISSION);
+            } catch (RuntimeException error) {
+                pendingAndroidPermissionCallback = null;
+                callback.reject();
+                Log.w(TAG, "Android site permission request failed", error);
+            }
+        });
+    }
+
+    private void requestMediaSitePermission(String uri,
+            GeckoSession.PermissionDelegate.MediaSource[] video,
+            GeckoSession.PermissionDelegate.MediaSource[] audio,
+            GeckoSession.PermissionDelegate.MediaCallback callback) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                callback.reject();
+                return;
+            }
+
+            boolean needsCamera = video != null && video.length > 0;
+            boolean needsMicrophone = audio != null && audio.length > 0;
+            if (needsCamera && checkSelfPermission(android.Manifest.permission.CAMERA)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                callback.reject();
+                return;
+            }
+            if (needsMicrophone && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                callback.reject();
+                return;
+            }
+
+            String requested = needsCamera && needsMicrophone ? "cámara y micrófono"
+                    : needsCamera ? "cámara" : "micrófono";
+            String site = getTabHost(uri);
+            GeckoSession.PermissionDelegate.MediaSource videoSource =
+                    needsCamera ? video[0] : null;
+            GeckoSession.PermissionDelegate.MediaSource audioSource =
+                    needsMicrophone ? audio[0] : null;
+
+            new AlertDialog.Builder(this)
+                    .setTitle("Acceso al dispositivo")
+                    .setMessage(site + " solicita usar tu " + requested + ".")
+                    .setPositiveButton("Permitir", (d, which) ->
+                            callback.grant(videoSource, audioSource))
+                    .setNegativeButton("Bloquear", (d, which) -> callback.reject())
+                    .setOnCancelListener(d -> callback.reject())
+                    .show();
+        });
+    }
+
+    private void handleExternalDownload(WebResponse response) {
+        if (response == null || response.body == null) {
+            Toast.makeText(this, "No se pudo obtener el archivo", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                try { response.body.close(); } catch (IOException ignored) { }
+                return;
+            }
+            if (pendingDownloadStream != null) {
+                try { response.body.close(); } catch (IOException ignored) { }
+                Toast.makeText(this, "Termina la descarga actual antes de iniciar otra",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            pendingDownloadStream = response.body;
+            pendingDownloadName = suggestedDownloadName(response.uri);
+            pendingDownloadMime = "application/octet-stream";
+            for (Map.Entry<String, String> header : response.headers.entrySet()) {
+                if (header.getKey() != null && header.getKey().equalsIgnoreCase("Content-Type")
+                        && header.getValue() != null) {
+                    pendingDownloadMime = header.getValue().split(";")[0].trim();
+                    break;
+                }
+            }
+            response.setReadTimeoutMillis(120000);
+            launchCreateDocument(REQUEST_SAVE_DOWNLOAD, pendingDownloadMime, pendingDownloadName);
+        });
+    }
+
+    private String suggestedDownloadName(String uriText) {
+        try {
+            String name = Uri.parse(uriText).getLastPathSegment();
+            if (name != null && !name.trim().isEmpty()) return safeFileName(Uri.decode(name));
+        } catch (RuntimeException ignored) { }
+        return "archivo-" + System.currentTimeMillis();
+    }
+
+    private String safeFileName(String value) {
+        String name = value == null ? "archivo" : value.trim();
+        name = name.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
+        if (name.isEmpty() || name.equals(".") || name.equals("..")) name = "archivo";
+        return name.length() > 100 ? name.substring(0, 100) : name;
+    }
+
+    private void launchCreateDocument(int requestCode, String mimeType, String fileName) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(mimeType == null || mimeType.isEmpty()
+                ? "application/octet-stream" : mimeType);
+        intent.putExtra(Intent.EXTRA_TITLE, fileName == null ? "archivo" : fileName);
+        try {
+            startActivityForResult(intent, requestCode);
+        } catch (RuntimeException error) {
+            if (requestCode == REQUEST_SAVE_DOWNLOAD && pendingDownloadStream != null) {
+                try { pendingDownloadStream.close(); } catch (IOException ignored) { }
+                pendingDownloadStream = null;
+            }
+            if (requestCode == REQUEST_SAVE_PDF && pendingPdfFile != null) {
+                pendingPdfFile.delete();
+                pendingPdfFile = null;
+            }
+            Toast.makeText(this, "No se pudo abrir el selector de archivos",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void saveCurrentPageAsPdf() {
+        if (activeTab == null || activeTab.session == null || currentUrl().equals(HOME_URL)) {
+            Toast.makeText(this, "Abre una página antes de guardarla como PDF",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (pendingPdfFile != null) {
+            Toast.makeText(this, "Termina de guardar el PDF actual primero",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        GeckoSession session = activeTab.session;
+        String pageTitle = safeFileName(activeTab.title);
+        Toast.makeText(this, "Preparando PDF…", Toast.LENGTH_SHORT).show();
+        try {
+            session.saveAsPdf().accept(pdfStream -> {
+                if (pdfStream == null) {
+                    Toast.makeText(this, "No se pudo generar el PDF", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                ioExecutor.execute(() -> {
+                    File temp = new File(getCacheDir(),
+                            "astroweb-" + System.currentTimeMillis() + ".pdf");
+                    boolean written = false;
+                    try (InputStream input = pdfStream;
+                         OutputStream output = new FileOutputStream(temp)) {
+                        byte[] buffer = new byte[16384];
+                        int count;
+                        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                        output.flush();
+                        written = true;
+                    } catch (IOException error) {
+                        Log.e(TAG, "PDF generation failed", error);
+                    }
+
+                    final boolean ready = written;
+                    runOnUiThread(() -> {
+                        if (!ready || isFinishing() || isDestroyed()) {
+                            temp.delete();
+                            Toast.makeText(this, "No se pudo generar el PDF",
+                                    Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        pendingPdfFile = temp;
+                        launchCreateDocument(REQUEST_SAVE_PDF, "application/pdf",
+                                pageTitle + ".pdf");
+                    });
+                });
+            }, error -> runOnUiThread(() ->
+                    Toast.makeText(this, "No se pudo generar el PDF",
+                            Toast.LENGTH_SHORT).show()));
+        } catch (RuntimeException error) {
+            Log.e(TAG, "PDF export could not start", error);
+            Toast.makeText(this, "No se pudo iniciar la exportación",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void copyStreamToUri(InputStream input, Uri destination, String name, String mime) {
+        ioExecutor.execute(() -> {
+            boolean success = false;
+            try (InputStream source = input;
+                 OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                if (output == null) throw new IOException("No output stream for destination");
+                byte[] buffer = new byte[16384];
+                int count;
+                while ((count = source.read(buffer)) != -1) output.write(buffer, 0, count);
+                output.flush();
+                success = true;
+            } catch (IOException error) {
+                Log.e(TAG, "Download save failed", error);
+            }
+            if (success) recordDownload(destination, name, mime);
+            final boolean saved = success;
+            runOnUiThread(() -> Toast.makeText(this,
+                    saved ? "Archivo guardado en Descargas" : "No se pudo guardar el archivo",
+                    Toast.LENGTH_SHORT).show());
+        });
+    }
+
+    private void copyFileToUri(File sourceFile, Uri destination, String name, String mime) {
+        ioExecutor.execute(() -> {
+            boolean success = false;
+            try (InputStream input = new FileInputStream(sourceFile);
+                 OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+                if (output == null) throw new IOException("No output stream for destination");
+                byte[] buffer = new byte[16384];
+                int count;
+                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+                output.flush();
+                success = true;
+            } catch (IOException error) {
+                Log.e(TAG, "PDF save failed", error);
+            } finally {
+                sourceFile.delete();
+            }
+            if (success) recordDownload(destination, name, mime);
+            final boolean saved = success;
+            runOnUiThread(() -> Toast.makeText(this,
+                    saved ? "PDF guardado correctamente" : "No se pudo guardar el PDF",
+                    Toast.LENGTH_SHORT).show());
+        });
+    }
+
+    private void recordDownload(Uri uri, String name, String mime) {
+        try {
+            JSONArray entries = new JSONArray(storage.getString("downloads", "[]"));
+            JSONObject item = new JSONObject();
+            item.put("uri", uri.toString());
+            item.put("name", name == null ? "archivo" : name);
+            item.put("mime", mime == null ? "application/octet-stream" : mime);
+            item.put("savedAt", System.currentTimeMillis());
+            entries.put(item);
+            while (entries.length() > 30) entries.remove(0);
+            storage.edit().putString("downloads", entries.toString()).apply();
+        } catch (JSONException | RuntimeException error) {
+            Log.w(TAG, "Could not store download history", error);
+        }
+    }
+
+    private void showDownloadsDialog() {
+        JSONArray entries;
+        try {
+            entries = new JSONArray(storage.getString("downloads", "[]"));
+        } catch (JSONException error) {
+            entries = new JSONArray();
+        }
+
+        List<JSONObject> savedItems = new ArrayList<>();
+        List<String> labels = new ArrayList<>();
+        for (int i = entries.length() - 1; i >= 0; i--) {
+            JSONObject item = entries.optJSONObject(i);
+            if (item == null || item.optString("uri").isEmpty()) continue;
+            savedItems.add(item);
+            labels.add(item.optString("name", "Archivo guardado"));
+        }
+
+        if (savedItems.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Descargas")
+                    .setMessage("Todavía no hay archivos guardados.")
+                    .setPositiveButton("Cerrar", null)
+                    .show();
+            return;
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Descargas")
+                .setItems(labels.toArray(new String[0]), (dialog, which) ->
+                        openSavedDownload(savedItems.get(which)))
+                .setNegativeButton("Borrar lista", (dialog, which) ->
+                        storage.edit().remove("downloads").apply())
+                .setPositiveButton("Cerrar", null)
+                .show();
+    }
+
+    private void openSavedDownload(JSONObject item) {
+        try {
+            Uri uri = Uri.parse(item.getString("uri"));
+            String mime = item.optString("mime", "application/octet-stream");
+            Intent open = new Intent(Intent.ACTION_VIEW);
+            open.setDataAndType(uri, mime);
+            open.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(open, "Abrir archivo"));
+        } catch (Exception error) {
+            Toast.makeText(this, "No hay una aplicación para abrir este archivo",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private BrowserTab createWindowTab(String requestedUrl) {
         if (tabs.size() >= 20) {
             Toast.makeText(this, "Llegaste al límite de 20 pestañas", Toast.LENGTH_SHORT).show();
@@ -944,12 +1369,11 @@ public class MainActivity extends Activity {
         }
         activeTab = tab;
         persistTabsSnapshot();
-        if (tab.url.equals(HOME_URL)) {
-            lastScrollY = 0;
-            scrollAccumulator = 0f;
-            scrollDirection = 0;
-            animateAddressBar(true);
-        }
+        lastScrollY = 0;
+        scrollAccumulator = 0f;
+        scrollDirection = 0;
+        ignoreNextScrollUpdate = true;
+        if (tab.url.equals(HOME_URL)) animateAddressBar(true);
         geckoView.setSession(tab.session);
         try {
             tab.session.setActive(true);
@@ -1126,7 +1550,11 @@ public class MainActivity extends Activity {
     }
 
     private void showTabsOverview() {
-        Dialog dialog = new Dialog(this);
+        showTabsOverview(null);
+    }
+
+    private void showTabsOverview(Dialog existingDialog) {
+        Dialog dialog = existingDialog == null ? new Dialog(this) : existingDialog;
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setBackgroundColor(BG);
@@ -1212,8 +1640,13 @@ public class MainActivity extends Activity {
         newButtonParams.topMargin = dp(8);
         page.addView(newTabButton, newButtonParams);
 
-        page.setAlpha(0f);
-        page.setTranslationY(dp(8));
+        if (existingDialog == null) {
+            page.setAlpha(0f);
+            page.setTranslationY(dp(8));
+        } else {
+            page.setAlpha(1f);
+            page.setTranslationY(0f);
+        }
         dialog.setContentView(page);
         Window window = dialog.getWindow();
         if (window != null) {
@@ -1226,13 +1659,15 @@ public class MainActivity extends Activity {
             params.dimAmount = 0.32f;
             window.setAttributes(params);
         }
-        dialog.show();
+        if (existingDialog == null) dialog.show();
         if (window != null) {
             window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT);
         }
-        page.animate().alpha(1f).translationY(0f).setDuration(210)
-                .setInterpolator(new DecelerateInterpolator(1.3f)).start();
+        if (existingDialog == null) {
+            page.animate().alpha(1f).translationY(0f).setDuration(210)
+                    .setInterpolator(new DecelerateInterpolator(1.3f)).start();
+        }
     }
 
     private TextView overviewHeaderAction(String label, String description) {
@@ -1378,13 +1813,20 @@ public class MainActivity extends Activity {
         if (tab == null || !tabs.contains(tab)) return;
 
         if (tabs.size() == 1) {
+            tabs.remove(tab);
+            GeckoSession lastSession = tab.session;
+            tab.session = null;
             recycleTabThumbnail(tab);
-            tab.title = "Nueva pestaña";
-            tab.serializedState = null;
-            restartTab(tab, HOME_URL);
-            updateTabCounter();
+            if (lastSession != null) {
+                try {
+                    lastSession.close();
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "Last tab close failed", error);
+                }
+            }
+            activeTab = null;
+            clearSavedTabsAndExit();
             overviewDialog.dismiss();
-            showTabsOverview();
             return;
         }
 
@@ -1411,14 +1853,26 @@ public class MainActivity extends Activity {
 
         updateTabCounter();
         persistTabsSnapshot();
-        overviewDialog.dismiss();
 
-        // Refresh the existing overview directly. Do not recapture the active page here:
-        // the tab list has already changed and a second asynchronous capture can race the UI.
-        showTabsOverview();
+        // Keep the same Dialog/window alive. Replacing its content avoids the
+        // close-fade/reopen-fade flash that appeared after every tab deletion.
+        showTabsOverview(overviewDialog);
     }
 
-    private void recycleTabThumbnail(BrowserTab tab) {
+    private void clearSavedTabsAndExit() {
+        if (storage != null) {
+            storage.edit()
+                    .remove("tabs_snapshot")
+                    .remove("last_url")
+                    .remove("session_state")
+                    .apply();
+        }
+        updateTabCounter();
+        finish();
+    }
+
+
+        private void recycleTabThumbnail(BrowserTab tab) {
         if (tab == null || tab.thumbnail == null) return;
         if (!tab.thumbnail.isRecycled()) tab.thumbnail.recycle();
         tab.thumbnail = null;
@@ -1432,14 +1886,22 @@ public class MainActivity extends Activity {
 
     private void closeActiveTab() {
         if (activeTab == null) return;
-        if (tabs.size() == 1) {
-            activeTab.serializedState = null;
-            activeTab.title = "Nueva pestaña";
-            recycleTabThumbnail(activeTab);
-            restartTab(activeTab, HOME_URL);
-            persistTabsSnapshot();
+
+        if (tabs.size() <= 1) {
+            BrowserTab last = activeTab;
+            tabs.remove(last);
+            activeTab = null;
+            GeckoSession old = last.session;
+            last.session = null;
+            recycleTabThumbnail(last);
+            if (old != null) {
+                try { old.close(); }
+                catch (RuntimeException error) { Log.w(TAG, "Last tab close failed", error); }
+            }
+            clearSavedTabsAndExit();
             return;
         }
+
         int oldIndex = tabs.indexOf(activeTab);
         BrowserTab closing = activeTab;
         tabs.remove(closing);
@@ -1457,7 +1919,8 @@ public class MainActivity extends Activity {
         persistTabsSnapshot();
     }
 
-    private void showBrowserMenu(View anchor) {
+
+        private void showBrowserMenu(View anchor) {
         List<String> labels = new ArrayList<>();
         List<Integer> icons = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
@@ -1474,6 +1937,8 @@ public class MainActivity extends Activity {
         addTool(labels, icons, actions, "Compartir", R.drawable.ic_share, this::shareCurrentPage);
         addTool(labels, icons, actions, "Copiar enlace", R.drawable.ic_copy, this::copyCurrentAddress);
         addTool(labels, icons, actions, "Abrir fuera", R.drawable.ic_external, this::openInExternalBrowser);
+        addTool(labels, icons, actions, "Guardar PDF", R.drawable.ic_copy, this::saveCurrentPageAsPdf);
+        addTool(labels, icons, actions, "Descargas", R.drawable.ic_history, this::showDownloadsDialog);
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -1892,63 +2357,69 @@ public class MainActivity extends Activity {
 
     private void animateAddressBar(boolean show) {
         if (topChrome == null) return;
-        if (show == !addressBarHidden && topChrome.getVisibility() == View.VISIBLE) return;
-        if (!show && addressBarHidden) return;
+        // addressBarHidden represents the target state, not the current frame.
+        if (show == !addressBarHidden) return;
 
-        addressBarHidden = !show;
-        if (show) {
-            setBrowserContentTopOffset(true);
-        }
+        // Increment first: cancel() also invokes onAnimationEnd on the old animator.
+        // The old listener must not apply its stale hide/show completion.
+        final int token = ++addressAnimationToken;
         if (addressAnimator != null) {
             addressAnimator.cancel();
             addressAnimator = null;
         }
 
-        View chrome = topChrome;
-        int distance = chrome.getHeight() > 0 ? chrome.getHeight() : dp(52);
-        float startTranslation = chrome.getTranslationY();
-        float endTranslation = show ? 0f : -distance;
-        float startAlpha = chrome.getAlpha();
-        float endAlpha = show ? 1f : 0f;
-
+        addressBarHidden = !show;
         if (show) {
-            chrome.setVisibility(View.VISIBLE);
-            if (startTranslation == 0f && startAlpha == 1f) {
-                chrome.setTranslationY(-distance);
-                chrome.setAlpha(0f);
-                startTranslation = -distance;
-                startAlpha = 0f;
-            }
+            setBrowserContentTopOffset(true);
+            topChrome.setVisibility(View.VISIBLE);
         }
 
-        final float fromY = startTranslation;
-        final float fromAlpha = startAlpha;
-        final int token = ++addressAnimationToken;
+        View chrome = topChrome;
+        int distance = chrome.getHeight() > 0 ? chrome.getHeight() : dp(55);
+        float fromY = chrome.getTranslationY();
+        float fromAlpha = chrome.getAlpha();
+        float toY = show ? 0f : -distance;
+        float toAlpha = show ? 1f : 0f;
+
+        if (show && chrome.getVisibility() != View.VISIBLE) {
+            chrome.setVisibility(View.VISIBLE);
+            fromY = -distance;
+            fromAlpha = 0f;
+            chrome.setTranslationY(fromY);
+            chrome.setAlpha(fromAlpha);
+        } else if (show && fromY == 0f && fromAlpha == 1f) {
+            return;
+        }
+
         ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
         addressAnimator = animator;
         animator.setDuration(show ? 230 : 190);
         animator.setInterpolator(new DecelerateInterpolator(1.35f));
         animator.addUpdateListener(value -> {
             float t = (float) value.getAnimatedValue();
-            chrome.setTranslationY(fromY + (endTranslation - fromY) * t);
-            chrome.setAlpha(fromAlpha + (endAlpha - fromAlpha) * t);
+            chrome.setTranslationY(fromY + (toY - fromY) * t);
+            chrome.setAlpha(fromAlpha + (toAlpha - fromAlpha) * t);
         });
         animator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (token != addressAnimationToken) return;
-                chrome.setTranslationY(endTranslation);
-                chrome.setAlpha(endAlpha);
+                chrome.setTranslationY(toY);
+                chrome.setAlpha(toAlpha);
                 if (!show) {
                     chrome.setVisibility(View.GONE);
                     setBrowserContentTopOffset(false);
                 }
+                scrollAccumulator = 0f;
+                scrollDirection = 0;
+                ignoreNextScrollUpdate = true;
                 addressAnimator = null;
             }
         });
         animator.start();
     }
 
-    private void applySoftRipple(View view) {
+
+        private void applySoftRipple(View view) {
         Drawable content = view.getBackground();
         if (content == null) content = new ColorDrawable(Color.TRANSPARENT);
         RippleDrawable ripple = new RippleDrawable(
@@ -2058,6 +2529,74 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == REQUEST_SAVE_DOWNLOAD) {
+            InputStream source = pendingDownloadStream;
+            String name = pendingDownloadName;
+            String mime = pendingDownloadMime;
+            pendingDownloadStream = null;
+            pendingDownloadName = null;
+            pendingDownloadMime = null;
+
+            if (resultCode == RESULT_OK && data != null && data.getData() != null
+                    && source != null) {
+                Uri destination = data.getData();
+                try {
+                    int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(destination, flags);
+                } catch (RuntimeException ignored) { }
+                copyStreamToUri(source, destination, name, mime);
+            } else if (source != null) {
+                try { source.close(); } catch (IOException ignored) { }
+            }
+            return;
+        }
+
+        if (requestCode == REQUEST_SAVE_PDF) {
+            File source = pendingPdfFile;
+            pendingPdfFile = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null
+                    && source != null) {
+                Uri destination = data.getData();
+                try {
+                    int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(destination, flags);
+                } catch (RuntimeException ignored) { }
+                copyFileToUri(source, destination, source.getName(), "application/pdf");
+            } else if (source != null) {
+                source.delete();
+            }
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_ANDROID_SITE_PERMISSION) return;
+
+        GeckoSession.PermissionDelegate.Callback callback = pendingAndroidPermissionCallback;
+        pendingAndroidPermissionCallback = null;
+        if (callback == null) return;
+
+        boolean granted = grantResults != null && grantResults.length > 0;
+        if (granted) {
+            for (int result : grantResults) {
+                if (result != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    granted = false;
+                    break;
+                }
+            }
+        }
+        if (granted) callback.grant();
+        else callback.reject();
+    }
+
+    @Override
     protected void onPause() {
         for (BrowserTab tab : tabs) {
             if (tab.session == null) continue;
@@ -2131,6 +2670,19 @@ public class MainActivity extends Activity {
         }
         tabs.clear();
         activeTab = null;
+        if (pendingDownloadStream != null) {
+            try { pendingDownloadStream.close(); } catch (IOException ignored) { }
+            pendingDownloadStream = null;
+        }
+        if (pendingPdfFile != null) {
+            pendingPdfFile.delete();
+            pendingPdfFile = null;
+        }
+        if (pendingAndroidPermissionCallback != null) {
+            pendingAndroidPermissionCallback.reject();
+            pendingAndroidPermissionCallback = null;
+        }
+        ioExecutor.shutdown();
         super.onDestroy();
     }
 }
