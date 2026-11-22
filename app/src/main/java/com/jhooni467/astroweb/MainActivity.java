@@ -656,6 +656,7 @@ public class MainActivity extends Activity {
                 public void onTitleChange(GeckoSession current, String title) {
                     if (title != null && !title.trim().isEmpty()) {
                         tab.title = title.trim();
+                        runOnUiThread(() -> persistTabsSnapshot());
                     }
                 }
 
@@ -820,6 +821,7 @@ public class MainActivity extends Activity {
                         } catch (RuntimeException ignored) { }
                     }
                     activeTab = tab;
+                    persistTabsSnapshot();
                     lastScrollY = 0;
                     scrollAccumulator = 0f;
                     scrollDirection = 0;
@@ -1429,7 +1431,7 @@ public class MainActivity extends Activity {
         if (tabs.size() == 1) {
             activeTab.serializedState = null;
             activeTab.title = "Nueva pestaña";
-            activeTab.thumbnail = null;
+            recycleTabThumbnail(activeTab);
             restartTab(activeTab, HOME_URL);
             persistTabsSnapshot();
             return;
