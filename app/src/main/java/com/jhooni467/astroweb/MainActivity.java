@@ -1,6 +1,7 @@
 package com.jhooni467.astroweb;
 
 import android.app.Activity;
+import android.animation.ValueAnimator;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -15,6 +16,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Parcel;
+import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -59,6 +62,9 @@ public class MainActivity extends Activity {
     private GeckoView geckoView;
     private EditText addressField;
     private TextView tabCounter;
+    private LinearLayout addressRow;
+    private int lastScrollY = 0;
+    private String pendingSessionState;
     private ImageButton backButton;
     private ImageButton forwardButton;
     private ImageButton bookmarkButton;
@@ -82,8 +88,10 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         storage = getSharedPreferences("astroweb_browser", MODE_PRIVATE);
+        pendingSessionState = storage.getString("session_state", null);
         buildInterface();
-        createTab(HOME_URL);
+        String lastUrl = storage.getString("last_url", HOME_URL);
+        createTab(lastUrl == null || lastUrl.isEmpty() ? HOME_URL : lastUrl);
     }
 
     private void buildInterface() {
@@ -100,7 +108,7 @@ public class MainActivity extends Activity {
             return insets;
         });
 
-        LinearLayout addressRow = new LinearLayout(this);
+        addressRow = new LinearLayout(this);
         addressRow.setOrientation(LinearLayout.HORIZONTAL);
         addressRow.setGravity(Gravity.CENTER_VERTICAL);
         addressRow.setBackgroundColor(BAR);
@@ -129,32 +137,7 @@ public class MainActivity extends Activity {
         });
         addressRow.addView(addressField, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        ImageButton newTab = iconButton(R.drawable.ic_add, "Nueva pestaña",
-                () -> createTab(HOME_URL));
-        addressRow.addView(newTab, new LinearLayout.LayoutParams(dp(38), dp(48)));
 
-        tabCounter = new TextView(this);
-        tabCounter.setText("1");
-        tabCounter.setTextSize(12);
-        tabCounter.setTextColor(TEXT);
-        tabCounter.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        tabCounter.setGravity(Gravity.CENTER);
-        GradientDrawable tabShape = new GradientDrawable();
-        tabShape.setColor(Color.TRANSPARENT);
-        tabShape.setCornerRadius(dp(4));
-        tabShape.setStroke(dp(1), MUTED);
-        tabCounter.setBackground(tabShape);
-        tabCounter.setOnClickListener(v -> showTabsDialog());
-        tabCounter.setContentDescription("Pestañas abiertas");
-        LinearLayout.LayoutParams tabCounterParams =
-                new LinearLayout.LayoutParams(dp(27), dp(27));
-        tabCounterParams.gravity = Gravity.CENTER_VERTICAL;
-        tabCounterParams.rightMargin = dp(5);
-        addressRow.addView(tabCounter, tabCounterParams);
-
-        ImageButton menu = iconButton(R.drawable.ic_more, "Menú del navegador", () -> {});
-        menu.setOnClickListener(v -> showBrowserMenu(v));
-        addressRow.addView(menu, new LinearLayout.LayoutParams(dp(39), dp(48)));
 
         View addressDivider = new View(this);
         addressDivider.setBackgroundColor(DIVIDER);
@@ -216,20 +199,19 @@ public class MainActivity extends Activity {
         bottomBar.setGravity(Gravity.CENTER);
         bottomBar.setBackgroundColor(BAR);
 
-        backButton = bottomButton(R.drawable.ic_back, "Atrás", this::goBack);
-        forwardButton = bottomButton(R.drawable.ic_forward, "Adelante", this::goForward);
         ImageButton home = bottomButton(R.drawable.ic_home, "Inicio", this::loadHome);
-        bookmarkButton = bottomButton(R.drawable.ic_bookmark, "Guardar marcador",
-                this::toggleBookmark);
-        ImageButton reload = bottomButton(R.drawable.ic_reload, "Recargar", this::reloadPage);
+        bookmarkButton = bottomButton(R.drawable.ic_bookmark, "Marcadores", this::toggleBookmark);
+        ImageButton search = bottomButton(R.drawable.ic_search, "Buscar", this::focusAddress);
+        ImageButton tabs = bottomButton(R.drawable.ic_tabs, "Pestañas", this::showTabsDialog);
+        ImageButton menu = bottomButton(R.drawable.ic_more, "Menú", () -> showBrowserMenu(bottomBar));
 
-        addWeighted(bottomBar, backButton);
-        addWeighted(bottomBar, forwardButton);
         addWeighted(bottomBar, home);
         addWeighted(bottomBar, bookmarkButton);
-        addWeighted(bottomBar, reload);
+        addWeighted(bottomBar, search);
+        addWeighted(bottomBar, tabs);
+        addWeighted(bottomBar, menu);
 
-        root.addView(addressRow, new LinearLayout.LayoutParams(-1, dp(48)));
+        root.addView(addressRow, new LinearLayout.LayoutParams(-1, dp(50)));
         root.addView(addressDivider, new LinearLayout.LayoutParams(-1, dp(1)));
         root.addView(browserFrame, new LinearLayout.LayoutParams(-1, 0, 1f));
         root.addView(bottomDivider, new LinearLayout.LayoutParams(-1, dp(1)));
@@ -318,6 +300,7 @@ public class MainActivity extends Activity {
                     runOnUiThread(() -> {
                         if (uri == null) return;
                         tab.url = uri;
+                        storage.edit().putString("last_url", uri).apply();
                         if (tab == activeTab && addressField != null) {
                             addressField.setText(uri.equals(HOME_URL) ? "" : uri);
                             addressField.setSelection(addressField.getText().length());
@@ -368,10 +351,22 @@ public class MainActivity extends Activity {
                     if (success) {
                         recoveryAttempts = 0;
                         addHistory(tab.url);
+                        current.flushSessionState();
                     }
+                }
+
+                @Override
+                public void onSessionStateChange(GeckoSession current, GeckoSession.SessionState state) {
+                    if (tab == activeTab || tab.session == current) saveSessionState(tab, state);
                 }
             });
 
+            newSession.setScrollDelegate((session, scrollX, scrollY) -> {
+                if (tab != activeTab) return;
+                if (scrollY > lastScrollY + dp(8)) animateAddressBar(false);
+                else if (scrollY < lastScrollY - dp(8)) animateAddressBar(true);
+                lastScrollY = Math.max(0, scrollY);
+            });
             newSession.open(runtime);
             if (activate) {
                 activeTab = tab;
@@ -382,7 +377,23 @@ public class MainActivity extends Activity {
                 updateNavigationButtons();
                 updateBookmarkButton();
             }
-            newSession.loadUri(tab.url);
+            if (activate && pendingSessionState != null && !pendingSessionState.isEmpty()) {
+                try {
+                    byte[] bytes = Base64.decode(pendingSessionState, Base64.DEFAULT);
+                    Parcel parcel = Parcel.obtain();
+                    parcel.unmarshall(bytes, 0, bytes.length);
+                    parcel.setDataPosition(0);
+                    newSession.restoreState(GeckoSession.SessionState.CREATOR.createFromParcel(parcel));
+                    parcel.recycle();
+                    pendingSessionState = null;
+                } catch (Exception restoreError) {
+                    Log.w(TAG, "Could not restore previous browser session", restoreError);
+                    pendingSessionState = null;
+                    newSession.loadUri(tab.url);
+                }
+            } else {
+                newSession.loadUri(tab.url);
+            }
             updateTabCounter();
         } catch (Throwable error) {
             Log.e(TAG, "GeckoView initialization failed", error);
@@ -564,6 +575,8 @@ public class MainActivity extends Activity {
             createTab(HOME_URL);
             return true;
         });
+        popup.getMenu().add("Atrás").setOnMenuItemClickListener(item -> { goBack(); return true; });
+        popup.getMenu().add("Adelante").setOnMenuItemClickListener(item -> { goForward(); return true; });
         popup.getMenu().add("Recargar").setOnMenuItemClickListener(item -> {
             reloadPage();
             return true;
@@ -722,6 +735,50 @@ public class MainActivity extends Activity {
 
     private void updateTabCounter() {
         if (tabCounter != null) tabCounter.setText(String.valueOf(Math.max(1, tabs.size())));
+    }
+
+    private void saveSessionState(BrowserTab tab, GeckoSession.SessionState state) {
+        if (tab == null || state == null || tab != activeTab) return;
+        try {
+            Parcel parcel = Parcel.obtain();
+            state.writeToParcel(parcel, 0);
+            byte[] bytes = parcel.marshall();
+            parcel.recycle();
+            storage.edit()
+                    .putString("session_state", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                    .putString("last_url", tab.url)
+                    .apply();
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Could not persist browser session", error);
+        }
+    }
+
+    private void animateAddressBar(boolean show) {
+        if (addressRow == null) return;
+        int target = show ? dp(50) : 0;
+        View view = addressRow;
+        int current = view.getLayoutParams().height;
+        if (show && current == target && view.getVisibility() == View.VISIBLE) return;
+        if (!show && (current == 0 || view.getVisibility() != View.VISIBLE)) return;
+        if (show) {
+            view.setVisibility(View.VISIBLE);
+            view.setAlpha(0f);
+        }
+        ValueAnimator animator = ValueAnimator.ofInt(current, target);
+        animator.setDuration(190);
+        animator.addUpdateListener(animation -> {
+            android.view.ViewGroup.LayoutParams params = view.getLayoutParams();
+            params.height = (int) animation.getAnimatedValue();
+            view.setLayoutParams(params);
+            view.setAlpha(show ? Math.min(1f, (float) params.height / Math.max(1, target))
+                    : Math.max(0f, (float) params.height / Math.max(1, current)));
+        });
+        animator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (!show) view.setVisibility(View.GONE);
+            }
+        });
+        animator.start();
     }
 
     private void hideKeyboard() {
