@@ -967,10 +967,6 @@ public class MainActivity extends Activity {
                 return "reproducir audio automáticamente";
             case GeckoSession.PermissionDelegate.PERMISSION_AUTOPLAY_INAUDIBLE:
                 return "reproducir contenido automáticamente";
-            case GeckoSession.PermissionDelegate.PERMISSION_LOCAL_NETWORK_ACCESS:
-                return "acceder a dispositivos de tu red local";
-            case GeckoSession.PermissionDelegate.PERMISSION_LOCAL_DEVICE_ACCESS:
-                return "acceder a servicios de este dispositivo";
             default:
                 return "usar una función del dispositivo";
         }
@@ -980,6 +976,12 @@ public class MainActivity extends Activity {
             GeckoSession.PermissionDelegate.ContentPermission permission) {
         if (permission.value != GeckoSession.PermissionDelegate.ContentPermission.VALUE_PROMPT) {
             return GeckoResult.fromValue(permission.value);
+        }
+        // Persistent storage grants cannot be revoked through GeckoView's public API.
+        // Keep this permission denied until AstroWeb has a proper per-site reset screen.
+        if (permission.permission == GeckoSession.PermissionDelegate.PERMISSION_PERSISTENT_STORAGE) {
+            return GeckoResult.fromValue(
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
         }
 
         GeckoResult<Integer> result = new GeckoResult<>();
@@ -1013,6 +1015,19 @@ public class MainActivity extends Activity {
             callback.grant();
             return;
         }
+        // Only pass permissions that AstroWeb declares in its manifest.
+        // Unknown/new Gecko permissions are rejected safely instead of causing
+        // an undeclared-permission SecurityException on older Android versions.
+        for (String permission : permissions) {
+            boolean supported = android.Manifest.permission.ACCESS_COARSE_LOCATION.equals(permission)
+                    || android.Manifest.permission.ACCESS_FINE_LOCATION.equals(permission)
+                    || android.Manifest.permission.CAMERA.equals(permission)
+                    || android.Manifest.permission.RECORD_AUDIO.equals(permission);
+            if (!supported) {
+                callback.reject();
+                return;
+            }
+        }
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) {
                 callback.reject();
@@ -1044,6 +1059,10 @@ public class MainActivity extends Activity {
 
             boolean needsCamera = video != null && video.length > 0;
             boolean needsMicrophone = audio != null && audio.length > 0;
+            if (!needsCamera && !needsMicrophone) {
+                callback.reject();
+                return;
+            }
             if (needsCamera && checkSelfPermission(android.Manifest.permission.CAMERA)
                     != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 callback.reject();
