@@ -296,6 +296,11 @@ public class MainActivity extends Activity {
     }
 
     private void initializeTab(BrowserTab tab, String url, boolean activate) {
+        initializeTab(tab, url, activate, true);
+    }
+
+    private void initializeTab(BrowserTab tab, String url, boolean activate,
+            boolean loadInitialUri) {
         try {
             GeckoRuntime runtime = ((AstroWebApplication) getApplication()).getGeckoRuntime();
             GeckoSession newSession = new GeckoSession();
@@ -326,6 +331,14 @@ public class MainActivity extends Activity {
             });
 
             newSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
+                @Override
+                public GeckoResult<GeckoSession> onNewSession(GeckoSession current, String uri) {
+                    Log.i(TAG, "Page requested a new tab: " + uri);
+                    BrowserTab newTab = createWindowTab(uri);
+                    return newTab == null || newTab.session == null
+                            ? null : GeckoResult.fromValue(newTab.session);
+                }
+
                 @Override
                 public void onLocationChange(GeckoSession current, String uri,
                         List<GeckoSession.PermissionDelegate.ContentPermission> permissions,
@@ -435,21 +448,29 @@ public class MainActivity extends Activity {
                 }
             });
             newSession.open(runtime);
-            newSession.setActive(activate);
             if (activate) {
                 if (activeTab != null && activeTab != tab && activeTab.session != null) {
-                    try { activeTab.session.setActive(false); }
-                    catch (RuntimeException ignored) { }
+                    try {
+                        activeTab.session.setFocused(false);
+                        activeTab.session.setActive(false);
+                    } catch (RuntimeException ignored) { }
                 }
                 activeTab = tab;
                 geckoView.setSession(newSession);
+                newSession.setActive(true);
+                newSession.setFocused(true);
+                newSession.setPriorityHint(GeckoSession.PRIORITY_HIGH);
                 geckoView.coverUntilFirstPaint(BG);
                 failureOverlay.setVisibility(View.GONE);
                 addressField.setText(tab.url.equals(HOME_URL) ? "" : tab.url);
                 updateNavigationButtons();
                 updateBookmarkButton();
+            } else {
+                newSession.setActive(false);
+                newSession.setFocused(false);
+                newSession.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
             }
-            if (tab.serializedState != null && !tab.serializedState.isEmpty()) {
+            if (loadInitialUri && tab.serializedState != null && !tab.serializedState.isEmpty()) {
                 try {
                     GeckoSession.SessionState savedState =
                             GeckoSession.SessionState.fromString(tab.serializedState);
@@ -474,7 +495,7 @@ public class MainActivity extends Activity {
                     tab.serializedState = null;
                     newSession.loadUri(tab.url);
                 }
-            } else {
+            } else if (loadInitialUri) {
                 newSession.loadUri(tab.url);
             }
             updateTabCounter();
@@ -485,6 +506,20 @@ public class MainActivity extends Activity {
         }
     }
 
+    private BrowserTab createWindowTab(String requestedUrl) {
+        BrowserTab tab = new BrowserTab();
+        tab.url = requestedUrl == null || requestedUrl.isEmpty() ? HOME_URL : requestedUrl;
+        tabs.add(tab);
+        initializeTab(tab, tab.url, true, false);
+        updateTabCounter();
+        if (tab.session == null) {
+            tabs.remove(tab);
+            updateTabCounter();
+            return null;
+        }
+        return tab;
+    }
+
     private void activateTab(BrowserTab tab) {
         if (tab == null) return;
         if (tab.session == null) {
@@ -493,12 +528,14 @@ public class MainActivity extends Activity {
         }
         if (activeTab != null && activeTab != tab && activeTab.session != null) {
             captureTabPreview(activeTab, null);
-            try { activeTab.session.setActive(false); }
-            catch (RuntimeException ignored) { }
+            try {
+                activeTab.session.flushSessionState();
+                activeTab.session.setFocused(false);
+                activeTab.session.setActive(false);
+                activeTab.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
+            } catch (RuntimeException ignored) { }
         }
         activeTab = tab;
-        try { tab.session.setActive(true); }
-        catch (RuntimeException ignored) { }
         if (tab.url.equals(HOME_URL)) {
             lastScrollY = 0;
             scrollAccumulator = 0f;
@@ -506,6 +543,11 @@ public class MainActivity extends Activity {
             animateAddressBar(true);
         }
         geckoView.setSession(tab.session);
+        try {
+            tab.session.setActive(true);
+            tab.session.setFocused(true);
+            tab.session.setPriorityHint(GeckoSession.PRIORITY_HIGH);
+        } catch (RuntimeException ignored) { }
         addressField.setText(tab.url.equals(HOME_URL) ? "" : tab.url);
         addressField.setSelection(addressField.getText().length());
         failureOverlay.setVisibility(View.GONE);
@@ -1457,6 +1499,7 @@ public class MainActivity extends Activity {
         if (activeTab != null && activeTab.session != null) {
             try {
                 activeTab.session.flushSessionState();
+                activeTab.session.setFocused(false);
                 activeTab.session.setActive(false);
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not pause browser session cleanly", error);
@@ -1476,6 +1519,7 @@ public class MainActivity extends Activity {
         if (activeTab != null && activeTab.session != null) {
             try {
                 activeTab.session.setActive(true);
+                activeTab.session.setFocused(true);
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not resume browser session cleanly", error);
             }
