@@ -13,6 +13,9 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -24,15 +27,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
+import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -48,7 +50,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/** AstroWeb 0.04 — compact browser chrome, full-width pages and basic tabs. */
+/** AstroWeb 0.06 — adaptive browser chrome and persistent Gecko sessions. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final String HOME_URL = "resource://android/assets/home.html";
@@ -66,7 +68,13 @@ public class MainActivity extends Activity {
     private EditText addressField;
     private TextView tabCounter;
     private LinearLayout addressRow;
+    private View addressDivider;
+    private ValueAnimator addressAnimator;
+    private int addressAnimationToken = 0;
     private int lastScrollY = 0;
+    private float scrollAccumulator = 0f;
+    private int scrollDirection = 0;
+    private boolean addressBarHidden = false;
     private String pendingSessionState;
     private ImageButton backButton;
     private ImageButton forwardButton;
@@ -81,6 +89,7 @@ public class MainActivity extends Activity {
         GeckoSession session;
         String url = HOME_URL;
         String title = "Nueva pestaña";
+        String serializedState;
         boolean canGoBack;
         boolean canGoForward;
     }
@@ -89,7 +98,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().setStatusBarColor(BG);
-        getWindow().setNavigationBarColor(BG);
+        getWindow().setNavigationBarColor(BAR);
         storage = getSharedPreferences("astroweb_browser", MODE_PRIVATE);
         pendingSessionState = storage.getString("session_state", null);
         buildInterface();
@@ -142,7 +151,7 @@ public class MainActivity extends Activity {
 
 
 
-        View addressDivider = new View(this);
+        addressDivider = new View(this);
         addressDivider.setBackgroundColor(DIVIDER);
 
         geckoView = new GeckoView(this);
@@ -237,7 +246,8 @@ public class MainActivity extends Activity {
         button.setImageTintList(ColorStateList.valueOf(MUTED));
         button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         button.setPadding(dp(9), dp(9), dp(9), dp(9));
-        button.setBackgroundResource(android.R.drawable.list_selector_background);
+        button.setBackground(new ColorDrawable(Color.TRANSPARENT));
+        applySoftRipple(button);
         button.setContentDescription(description);
         button.setOnClickListener(v -> action.run());
         return button;
@@ -258,6 +268,7 @@ public class MainActivity extends Activity {
     }
 
     private void focusAddress() {
+        animateAddressBar(true);
         addressField.requestFocus();
         addressField.setSelection(addressField.getText().length());
         InputMethodManager manager =
@@ -267,6 +278,10 @@ public class MainActivity extends Activity {
 
     private void createTab(String url) {
         BrowserTab tab = new BrowserTab();
+        if (pendingSessionState != null && !pendingSessionState.isEmpty()) {
+            tab.serializedState = pendingSessionState;
+            pendingSessionState = null;
+        }
         tabs.add(tab);
         initializeTab(tab, url, true);
         updateTabCounter();
@@ -282,6 +297,13 @@ public class MainActivity extends Activity {
             tab.canGoForward = false;
 
             newSession.setContentDelegate(new GeckoSession.ContentDelegate() {
+                @Override
+                public void onTitleChange(GeckoSession current, String title) {
+                    if (title != null && !title.trim().isEmpty()) {
+                        tab.title = title.trim();
+                    }
+                }
+
                 @Override
                 public void onCrash(GeckoSession crashedSession) {
                     Log.e(TAG, "Gecko content process crashed");
@@ -304,6 +326,12 @@ public class MainActivity extends Activity {
                         if (uri == null) return;
                         tab.url = uri;
                         storage.edit().putString("last_url", uri).apply();
+                        if (uri.equals(HOME_URL)) {
+                            lastScrollY = 0;
+                            scrollAccumulator = 0f;
+                            scrollDirection = 0;
+                            animateAddressBar(true);
+                        }
                         if (tab == activeTab && addressField != null) {
                             addressField.setText(uri.equals(HOME_URL) ? "" : uri);
                             addressField.setSelection(addressField.getText().length());
@@ -368,13 +396,40 @@ public class MainActivity extends Activity {
                 @Override
                 public void onScrollChanged(GeckoSession session, int scrollX, int scrollY) {
                     if (tab != activeTab) return;
-                    if (scrollY > lastScrollY + dp(8)) animateAddressBar(false);
-                    else if (scrollY < lastScrollY - dp(8)) animateAddressBar(true);
+                    int delta = scrollY - lastScrollY;
                     lastScrollY = Math.max(0, scrollY);
+
+                    if (scrollY <= 3) {
+                        scrollAccumulator = 0f;
+                        scrollDirection = 0;
+                        animateAddressBar(true);
+                        return;
+                    }
+                    if (delta == 0) return;
+
+                    int direction = delta > 0 ? 1 : -1;
+                    if (direction != scrollDirection) {
+                        scrollAccumulator = 0f;
+                        scrollDirection = direction;
+                    }
+                    scrollAccumulator += Math.abs(delta);
+
+                    if (direction > 0 && !addressBarHidden && scrollAccumulator >= 34f) {
+                        scrollAccumulator = 0f;
+                        animateAddressBar(false);
+                    } else if (direction < 0 && addressBarHidden && scrollAccumulator >= 22f) {
+                        scrollAccumulator = 0f;
+                        animateAddressBar(true);
+                    }
                 }
             });
             newSession.open(runtime);
+            newSession.setActive(activate);
             if (activate) {
+                if (activeTab != null && activeTab != tab && activeTab.session != null) {
+                    try { activeTab.session.setActive(false); }
+                    catch (RuntimeException ignored) { }
+                }
                 activeTab = tab;
                 geckoView.setSession(newSession);
                 geckoView.coverUntilFirstPaint(BG);
@@ -383,18 +438,29 @@ public class MainActivity extends Activity {
                 updateNavigationButtons();
                 updateBookmarkButton();
             }
-            if (activate && pendingSessionState != null && !pendingSessionState.isEmpty()) {
+            if (tab.serializedState != null && !tab.serializedState.isEmpty()) {
                 try {
-                    byte[] bytes = Base64.decode(pendingSessionState, Base64.DEFAULT);
-                    Parcel parcel = Parcel.obtain();
-                    parcel.unmarshall(bytes, 0, bytes.length);
-                    parcel.setDataPosition(0);
-                    newSession.restoreState(GeckoSession.SessionState.CREATOR.createFromParcel(parcel));
-                    parcel.recycle();
-                    pendingSessionState = null;
+                    GeckoSession.SessionState savedState =
+                            GeckoSession.SessionState.fromString(tab.serializedState);
+                    if (savedState == null) {
+                        byte[] bytes = Base64.decode(tab.serializedState, Base64.DEFAULT);
+                        Parcel parcel = Parcel.obtain();
+                        try {
+                            parcel.unmarshall(bytes, 0, bytes.length);
+                            parcel.setDataPosition(0);
+                            savedState = GeckoSession.SessionState.CREATOR.createFromParcel(parcel);
+                        } finally {
+                            parcel.recycle();
+                        }
+                    }
+                    if (savedState != null) {
+                        newSession.restoreState(savedState);
+                    } else {
+                        newSession.loadUri(tab.url);
+                    }
                 } catch (Exception restoreError) {
                     Log.w(TAG, "Could not restore previous browser session", restoreError);
-                    pendingSessionState = null;
+                    tab.serializedState = null;
                     newSession.loadUri(tab.url);
                 }
             } else {
@@ -414,7 +480,19 @@ public class MainActivity extends Activity {
             restartTab(tab, tab.url);
             return;
         }
+        if (activeTab != null && activeTab != tab && activeTab.session != null) {
+            try { activeTab.session.setActive(false); }
+            catch (RuntimeException ignored) { }
+        }
         activeTab = tab;
+        try { tab.session.setActive(true); }
+        catch (RuntimeException ignored) { }
+        if (tab.url.equals(HOME_URL)) {
+            lastScrollY = 0;
+            scrollAccumulator = 0f;
+            scrollDirection = 0;
+            animateAddressBar(true);
+        }
         geckoView.setSession(tab.session);
         addressField.setText(tab.url.equals(HOME_URL) ? "" : tab.url);
         addressField.setSelection(addressField.getText().length());
@@ -490,6 +568,10 @@ public class MainActivity extends Activity {
     }
 
     private void loadHome() {
+        lastScrollY = 0;
+        scrollAccumulator = 0f;
+        scrollDirection = 0;
+        animateAddressBar(true);
         if (activeTab == null) {
             createTab(HOME_URL);
             return;
@@ -534,13 +616,18 @@ public class MainActivity extends Activity {
             return;
         }
         List<String> labels = new ArrayList<>();
+        List<String> subtitles = new ArrayList<>();
+        List<Integer> icons = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
         for (BrowserTab tab : new ArrayList<>(tabs)) {
-            String label = tab.url.equals(HOME_URL) ? "Nueva pestaña" : tab.url;
-            labels.add((tab == activeTab ? "✓   " : "") + shorten(label, 48));
+            String label = tab.title == null || tab.title.trim().isEmpty()
+                    ? "Nueva pestaña" : tab.title;
+            labels.add((tab == activeTab ? "✓  " : "") + shorten(label, 34));
+            subtitles.add(tab.url.equals(HOME_URL) ? "Página de inicio" : shorten(tab.url, 56));
+            icons.add(R.drawable.ic_tabs);
             actions.add(() -> activateTab(tab));
         }
-        showBottomSheet("Pestañas · " + tabs.size(), labels, actions,
+        showBottomSheet("Pestañas abiertas", labels, subtitles, icons, actions,
                 "Nueva pestaña", () -> createTab(HOME_URL),
                 "Cerrar pestaña actual", this::closeActiveTab);
     }
@@ -574,20 +661,44 @@ public class MainActivity extends Activity {
 
     private void showBrowserMenu(View anchor) {
         List<String> labels = new ArrayList<>();
+        List<String> subtitles = new ArrayList<>();
+        List<Integer> icons = new ArrayList<>();
         List<Runnable> actions = new ArrayList<>();
-        labels.add("Nueva pestaña"); actions.add(() -> createTab(HOME_URL));
-        labels.add("Atrás"); actions.add(this::goBack);
-        labels.add("Adelante"); actions.add(this::goForward);
-        labels.add("Recargar"); actions.add(this::reloadPage);
-        labels.add("Marcadores"); actions.add(this::showBookmarksDialog);
-        labels.add("Historial"); actions.add(this::showHistoryDialog);
-        labels.add("Compartir página"); actions.add(this::shareCurrentPage);
-        labels.add("Copiar dirección"); actions.add(this::copyCurrentAddress);
-        labels.add("Abrir en otro navegador"); actions.add(this::openInExternalBrowser);
-        showBottomSheet("AstroWeb", labels, actions, null, null, null, null);
+
+        addMenuItem(labels, subtitles, icons, actions,
+                "Nueva pestaña", "Abrir otra página", R.drawable.ic_add, () -> createTab(HOME_URL));
+        addMenuItem(labels, subtitles, icons, actions,
+                "Atrás", "Página anterior", R.drawable.ic_back, this::goBack);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Adelante", "Siguiente página", R.drawable.ic_forward, this::goForward);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Recargar", "Actualizar esta página", R.drawable.ic_reload, this::reloadPage);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Marcadores", "Páginas guardadas", R.drawable.ic_bookmark, this::showBookmarksDialog);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Historial", "Páginas visitadas", R.drawable.ic_history, this::showHistoryDialog);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Compartir", "Enviar enlace", R.drawable.ic_share, this::shareCurrentPage);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Copiar enlace", "Copiar dirección actual", R.drawable.ic_copy, this::copyCurrentAddress);
+        addMenuItem(labels, subtitles, icons, actions,
+                "Abrir en otro navegador", "Usar otra aplicación", R.drawable.ic_external, this::openInExternalBrowser);
+
+        showBottomSheet("Herramientas", labels, subtitles, icons, actions,
+                null, null, null, null);
     }
 
-    private void showBottomSheet(String title, List<String> labels, List<Runnable> actions,
+    private void addMenuItem(List<String> labels, List<String> subtitles,
+            List<Integer> icons, List<Runnable> actions,
+            String label, String subtitle, int icon, Runnable action) {
+        labels.add(label);
+        subtitles.add(subtitle);
+        icons.add(icon);
+        actions.add(action);
+    }
+
+    private void showBottomSheet(String title, List<String> labels, List<String> subtitles,
+            List<Integer> icons, List<Runnable> actions,
             String primaryLabel, Runnable primaryAction,
             String secondaryLabel, Runnable secondaryAction) {
         Dialog dialog = new Dialog(this);
@@ -595,7 +706,7 @@ public class MainActivity extends Activity {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(20), dp(12), dp(20), dp(18));
         GradientDrawable surface = new GradientDrawable();
-        surface.setColor(Color.rgb(34, 41, 35));
+        surface.setColor(Color.rgb(31, 38, 32));
         surface.setCornerRadii(new float[]{dp(22),dp(22),dp(22),dp(22),dp(0),dp(0),dp(0),dp(0)});
         panel.setBackground(surface);
 
@@ -619,39 +730,80 @@ public class MainActivity extends Activity {
 
         for (int i = 0; i < labels.size(); i++) {
             final int index = i;
-            TextView item = new TextView(this);
-            item.setText(labels.get(i));
-            item.setTextColor(TEXT);
-            item.setTextSize(15);
+            boolean selected = labels.get(i).startsWith("✓");
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.HORIZONTAL);
             item.setGravity(Gravity.CENTER_VERTICAL);
-            item.setPadding(dp(10), 0, dp(10), 0);
-            item.setMinHeight(dp(48));
-            item.setBackgroundResource(android.R.drawable.list_selector_background);
-            item.setOnClickListener(v -> {
-                dialog.dismiss();
-                actions.get(index).run();
-            });
-            panel.addView(item, new LinearLayout.LayoutParams(-1, dp(48)));
+            item.setPadding(dp(9), dp(5), dp(9), dp(5));
+            if (selected) {
+                GradientDrawable selectedBg = new GradientDrawable();
+                selectedBg.setColor(Color.rgb(43, 57, 45));
+                selectedBg.setCornerRadius(dp(12));
+                item.setBackground(selectedBg);
+            }
+            applySoftRipple(item);
+
+            ImageView itemIcon = new ImageView(this);
+            itemIcon.setImageResource(icons.get(index));
+            itemIcon.setImageTintList(ColorStateList.valueOf(selected ? ACCENT : MUTED));
+            itemIcon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            LinearLayout.LayoutParams iconParams =
+                    new LinearLayout.LayoutParams(dp(24), dp(24));
+            iconParams.rightMargin = dp(13);
+            item.addView(itemIcon, iconParams);
+
+            LinearLayout textColumn = new LinearLayout(this);
+            textColumn.setOrientation(LinearLayout.VERTICAL);
+            textColumn.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView itemTitle = new TextView(this);
+            itemTitle.setText(labels.get(i));
+            itemTitle.setTextColor(selected ? ACCENT : TEXT);
+            itemTitle.setTextSize(14);
+            itemTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            textColumn.addView(itemTitle);
+
+            String sub = subtitles != null && i < subtitles.size() ? subtitles.get(i) : "";
+            if (sub != null && !sub.isEmpty()) {
+                TextView itemSubtitle = new TextView(this);
+                itemSubtitle.setText(sub);
+                itemSubtitle.setTextColor(MUTED);
+                itemSubtitle.setTextSize(11);
+                itemSubtitle.setSingleLine(true);
+                itemSubtitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                LinearLayout.LayoutParams subtitleParams =
+                        new LinearLayout.LayoutParams(-1, -2);
+                subtitleParams.topMargin = dp(2);
+                textColumn.addView(itemSubtitle, subtitleParams);
+            }
+            item.addView(textColumn, new LinearLayout.LayoutParams(0, -2, 1f));
+            item.setMinimumHeight(dp((sub == null || sub.isEmpty()) ? 48 : 60));
+            item.setOnClickListener(v -> dismissSheet(dialog, panel, actions.get(index)));
+            panel.addView(item, new LinearLayout.LayoutParams(-1, dp(
+                    (sub == null || sub.isEmpty()) ? 48 : 60)));
+
             if (i < labels.size() - 1) {
                 View divider = new View(this);
-                divider.setBackgroundColor(DIVIDER);
+                divider.setBackgroundColor(Color.rgb(47, 56, 48));
                 panel.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
             }
         }
 
         if (primaryLabel != null && primaryAction != null) {
             TextView primary = sheetAction(primaryLabel, true);
-            primary.setOnClickListener(v -> { dialog.dismiss(); primaryAction.run(); });
+            primary.setOnClickListener(v -> dismissSheet(dialog, panel, primaryAction));
             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, dp(48));
             p.topMargin = dp(12);
             panel.addView(primary, p);
         }
         if (secondaryLabel != null && secondaryAction != null) {
             TextView secondary = sheetAction(secondaryLabel, false);
-            secondary.setOnClickListener(v -> { dialog.dismiss(); secondaryAction.run(); });
+            secondary.setOnClickListener(v -> dismissSheet(dialog, panel, secondaryAction));
             panel.addView(secondary, new LinearLayout.LayoutParams(-1, dp(48)));
         }
 
+        panel.setAlpha(0f);
+        panel.setTranslationY(dp(26));
         dialog.setContentView(panel);
         Window window = dialog.getWindow();
         if (window != null) {
@@ -661,12 +813,24 @@ public class MainActivity extends Activity {
             params.width = WindowManager.LayoutParams.MATCH_PARENT;
             params.height = WindowManager.LayoutParams.WRAP_CONTENT;
             params.gravity = Gravity.BOTTOM;
-            params.dimAmount = 0.48f;
+            params.dimAmount = 0.38f;
+            params.windowAnimations = android.R.style.Animation_Dialog;
             window.setAttributes(params);
         }
         dialog.show();
         if (window != null) window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT);
+        panel.animate().translationY(0f).alpha(1f).setDuration(250)
+                .setInterpolator(new DecelerateInterpolator(1.4f)).start();
+    }
+
+    private void dismissSheet(Dialog dialog, View panel, Runnable action) {
+        panel.animate().translationY(dp(18)).alpha(0f).setDuration(150)
+                .setInterpolator(new DecelerateInterpolator())
+                .withEndAction(() -> {
+                    dialog.dismiss();
+                    if (action != null) action.run();
+                }).start();
     }
 
     private TextView sheetAction(String label, boolean primary) {
@@ -680,6 +844,7 @@ public class MainActivity extends Activity {
         bg.setCornerRadius(dp(14));
         bg.setColor(primary ? ACCENT : Color.rgb(49, 58, 50));
         action.setBackground(bg);
+        applySoftRipple(action);
         return action;
     }
 
@@ -716,12 +881,18 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Todavía no tienes marcadores", Toast.LENGTH_SHORT).show();
             return;
         }
-        String[] labels = saved.toArray(new String[0]);
-        new AlertDialog.Builder(this)
-                .setTitle("Marcadores")
-                .setItems(labels, (dialog, which) -> navigate(labels[which]))
-                .setPositiveButton("Cerrar", null)
-                .show();
+        List<String> labels = new ArrayList<>();
+        List<String> subtitles = new ArrayList<>();
+        List<Integer> icons = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        for (String url : saved) {
+            labels.add(shorten(url, 38));
+            subtitles.add(url);
+            icons.add(R.drawable.ic_bookmark);
+            actions.add(() -> navigate(url));
+        }
+        showBottomSheet("Marcadores", labels, subtitles, icons, actions,
+                null, null, null, null);
     }
 
     private void addHistory(String url) {
@@ -745,19 +916,24 @@ public class MainActivity extends Activity {
             return;
         }
         List<String> entries = new ArrayList<>();
-        for (String item : existing.split("\n")) {
+        for (String item : existing.split("\\n")) {
             if (!item.isEmpty()) entries.add(item);
         }
-        String[] labels = entries.toArray(new String[0]);
-        new AlertDialog.Builder(this)
-                .setTitle("Historial")
-                .setItems(labels, (dialog, which) -> navigate(labels[which]))
-                .setPositiveButton("Borrar historial", (dialog, which) -> {
-                    storage.edit().remove("history").apply();
+        List<String> labels = new ArrayList<>();
+        List<String> subtitles = new ArrayList<>();
+        List<Integer> icons = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        for (String url : entries) {
+            labels.add(shorten(url, 38));
+            subtitles.add(url);
+            icons.add(R.drawable.ic_history);
+            actions.add(() -> navigate(url));
+        }
+        showBottomSheet("Historial", labels, subtitles, icons, actions,
+                null, null, "Borrar historial", () -> {
+                    storage.edit().remove("history").commit();
                     Toast.makeText(this, "Historial borrado", Toast.LENGTH_SHORT).show();
-                })
-                .setNegativeButton("Cerrar", null)
-                .show();
+                });
     }
 
     private String currentUrl() {
@@ -819,12 +995,11 @@ public class MainActivity extends Activity {
     private void saveSessionState(BrowserTab tab, GeckoSession.SessionState state) {
         if (tab == null || state == null || tab != activeTab) return;
         try {
-            Parcel parcel = Parcel.obtain();
-            state.writeToParcel(parcel, 0);
-            byte[] bytes = parcel.marshall();
-            parcel.recycle();
+            String serialized = state.toString();
+            if (serialized == null || serialized.isEmpty()) return;
+            tab.serializedState = serialized;
             storage.edit()
-                    .putString("session_state", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                    .putString("session_state", serialized)
                     .putString("last_url", tab.url)
                     .apply();
         } catch (RuntimeException error) {
@@ -834,30 +1009,73 @@ public class MainActivity extends Activity {
 
     private void animateAddressBar(boolean show) {
         if (addressRow == null) return;
-        int target = show ? dp(50) : 0;
-        View view = addressRow;
-        int current = view.getLayoutParams().height;
-        if (show && current == target && view.getVisibility() == View.VISIBLE) return;
-        if (!show && (current == 0 || view.getVisibility() != View.VISIBLE)) return;
-        if (show) {
-            view.setVisibility(View.VISIBLE);
-            view.setAlpha(0f);
+        if (show == !addressBarHidden && addressRow.getVisibility() == View.VISIBLE) return;
+        if (!show && addressBarHidden) return;
+
+        addressBarHidden = !show;
+        if (addressAnimator != null) {
+            addressAnimator.cancel();
+            addressAnimator = null;
         }
-        ValueAnimator animator = ValueAnimator.ofInt(current, target);
-        animator.setDuration(190);
-        animator.addUpdateListener(animation -> {
-            android.view.ViewGroup.LayoutParams params = view.getLayoutParams();
-            params.height = (int) animation.getAnimatedValue();
-            view.setLayoutParams(params);
-            view.setAlpha(show ? Math.min(1f, (float) params.height / Math.max(1, target))
-                    : Math.max(0f, (float) params.height / Math.max(1, current)));
+
+        View row = addressRow;
+        int targetHeight = show ? dp(50) : 0;
+        int currentHeight = Math.max(0, row.getLayoutParams().height);
+
+        if (show) {
+            row.setVisibility(View.VISIBLE);
+            if (addressDivider != null) addressDivider.setVisibility(View.VISIBLE);
+            if (currentHeight == 0) {
+                row.setAlpha(0f);
+                row.setTranslationY(-dp(10));
+            }
+        }
+
+        float startAlpha = row.getAlpha();
+        float endAlpha = show ? 1f : 0f;
+        float startTranslation = row.getTranslationY();
+        float endTranslation = show ? 0f : -dp(10);
+        int token = ++addressAnimationToken;
+
+        ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+        addressAnimator = animator;
+        animator.setDuration(260);
+        animator.setInterpolator(new DecelerateInterpolator(1.7f));
+        animator.addUpdateListener(value -> {
+            float fraction = (float) value.getAnimatedValue();
+            int height = currentHeight + Math.round((targetHeight - currentHeight) * fraction);
+            android.view.ViewGroup.LayoutParams params = row.getLayoutParams();
+            params.height = Math.max(0, height);
+            row.setLayoutParams(params);
+            row.setAlpha(startAlpha + (endAlpha - startAlpha) * fraction);
+            row.setTranslationY(startTranslation + (endTranslation - startTranslation) * fraction);
         });
         animator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
-                if (!show) view.setVisibility(View.GONE);
+                if (token != addressAnimationToken) return;
+                android.view.ViewGroup.LayoutParams params = row.getLayoutParams();
+                params.height = targetHeight;
+                row.setLayoutParams(params);
+                row.setTranslationY(endTranslation);
+                row.setAlpha(endAlpha);
+                if (!show) {
+                    row.setVisibility(View.GONE);
+                    if (addressDivider != null) addressDivider.setVisibility(View.GONE);
+                }
+                addressAnimator = null;
             }
         });
         animator.start();
+    }
+
+    private void applySoftRipple(View view) {
+        Drawable content = view.getBackground();
+        if (content == null) content = new ColorDrawable(Color.TRANSPARENT);
+        RippleDrawable ripple = new RippleDrawable(
+                ColorStateList.valueOf(Color.argb(72, 169, 190, 166)),
+                content,
+                new ColorDrawable(Color.WHITE));
+        view.setBackground(ripple);
     }
 
     private void hideKeyboard() {
@@ -878,6 +1096,11 @@ public class MainActivity extends Activity {
             } catch (RuntimeException error) {
                 Log.w(TAG, "Could not pause browser session cleanly", error);
             }
+        }
+        if (activeTab != null) {
+            storage.edit().putString("last_url", activeTab.url)
+                    .putString("session_state", activeTab.serializedState)
+                    .commit();
         }
         super.onPause();
     }
