@@ -1,24 +1,30 @@
 package com.jhooni467.astroweb;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.text.InputType;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
+import android.widget.PopupMenu;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
@@ -28,41 +34,34 @@ import org.mozilla.geckoview.WebRequestError;
 
 import java.util.List;
 
-/**
- * AstroWeb 0.02 — GeckoView browser shell with loading and recovery states.
- */
+/** AstroWeb 0.03 — minimal browser interface and GeckoView recovery. */
 public class MainActivity extends Activity {
     private static final String TAG = "AstroWeb";
     private static final String HOME_URL = "resource://android/assets/home.html";
+    private static final int BG = Color.rgb(9, 10, 23);
+    private static final int TEXT = Color.rgb(244, 242, 255);
+    private static final int MUTED = Color.rgb(151, 150, 178);
+    private static final int ACCENT = Color.rgb(177, 159, 255);
+    private static final int LINE = Color.argb(95, 177, 159, 255);
 
-    private static final int SPACE = Color.rgb(8, 10, 25);
-    private static final int SURFACE = Color.rgb(20, 21, 48);
-    private static final int GLASS = Color.argb(225, 25, 26, 57);
-    private static final int TEXT = Color.rgb(246, 244, 255);
-    private static final int MUTED = Color.rgb(166, 165, 195);
-    private static final int ACCENT = Color.rgb(174, 157, 255);
-    private static final int BORDER = Color.argb(115, 163, 147, 255);
-
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private GeckoSession session;
     private GeckoView geckoView;
     private EditText addressField;
-    private Button backButton;
-    private Button forwardButton;
-    private ProgressBar loadProgress;
-    private TextView statusText;
-    private LinearLayout failureOverlay;
-
+    private TextView backButton;
+    private TextView forwardButton;
+    private FrameLayout failureOverlay;
     private boolean canGoBack;
     private boolean canGoForward;
+    private boolean recoveryScheduled;
+    private int recoveryAttempts;
     private String lastRequestedUrl = HOME_URL;
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        getWindow().setStatusBarColor(SPACE);
-        getWindow().setNavigationBarColor(SPACE);
-
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
         buildInterface();
         openBrowser(HOME_URL);
     }
@@ -70,259 +69,172 @@ public class MainActivity extends Activity {
     private void buildInterface() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(SPACE);
-        root.setPadding(dp(16), dp(14), dp(16), dp(10));
-
-        LinearLayout brandRow = new LinearLayout(this);
-        brandRow.setGravity(Gravity.CENTER_VERTICAL);
-        brandRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        TextView mark = new TextView(this);
-        mark.setText("✦");
-        mark.setTextColor(ACCENT);
-        mark.setTextSize(27);
-        mark.setGravity(Gravity.CENTER);
-        mark.setPadding(0, 0, dp(11), 0);
-        brandRow.addView(mark, new LinearLayout.LayoutParams(dp(39), dp(44)));
-
-        LinearLayout brandText = new LinearLayout(this);
-        brandText.setOrientation(LinearLayout.VERTICAL);
-
-        TextView title = new TextView(this);
-        title.setText("ASTROWEB");
-        title.setTextColor(TEXT);
-        title.setTextSize(16);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setLetterSpacing(0.13f);
-
-        TextView subtitle = new TextView(this);
-        subtitle.setText("EXPLORE BEYOND THE ORDINARY");
-        subtitle.setTextColor(MUTED);
-        subtitle.setTextSize(9);
-        subtitle.setLetterSpacing(0.12f);
-
-        brandText.addView(title);
-        brandText.addView(subtitle);
-        brandRow.addView(brandText, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        TextView version = new TextView(this);
-        version.setText("0.02");
-        version.setTextColor(MUTED);
-        version.setTextSize(11);
-        brandRow.addView(version);
-
-        root.addView(brandRow, new LinearLayout.LayoutParams(-1, dp(48)));
+        root.setBackgroundColor(BG);
+        root.setPadding(dp(18), dp(6), dp(18), dp(4));
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(dp(18), insets.getSystemWindowInsetTop() + dp(5),
+                    dp(18), insets.getSystemWindowInsetBottom() + dp(4));
+            return insets;
+        });
 
         LinearLayout addressRow = new LinearLayout(this);
         addressRow.setGravity(Gravity.CENTER_VERTICAL);
         addressRow.setOrientation(LinearLayout.HORIZONTAL);
-        addressRow.setPadding(dp(14), dp(4), dp(5), dp(4));
-        addressRow.setBackground(rounded(SURFACE, BORDER, 22));
 
-        TextView searchMark = new TextView(this);
-        searchMark.setText("⌕");
-        searchMark.setTextColor(MUTED);
-        searchMark.setTextSize(24);
-        searchMark.setGravity(Gravity.CENTER);
-        addressRow.addView(searchMark, new LinearLayout.LayoutParams(dp(30), -1));
+        TextView searchIcon = new TextView(this);
+        searchIcon.setText("⌕");
+        searchIcon.setTextColor(MUTED);
+        searchIcon.setTextSize(23);
+        searchIcon.setGravity(Gravity.CENTER);
+        addressRow.addView(searchIcon, new LinearLayout.LayoutParams(dp(30), -1));
 
         addressField = new EditText(this);
         addressField.setSingleLine(true);
         addressField.setTextSize(15);
         addressField.setTextColor(TEXT);
         addressField.setHintTextColor(MUTED);
-        addressField.setHint("Search or enter a website");
-        addressField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        addressField.setHint("Search or enter address");
         addressField.setImeOptions(EditorInfo.IME_ACTION_GO);
+        addressField.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         addressField.setBackgroundColor(Color.TRANSPARENT);
-        addressField.setPadding(0, dp(8), 0, dp(8));
+        addressField.setPadding(dp(5), 0, dp(5), 0);
         addressField.setSelectAllOnFocus(false);
-        addressField.setOnEditorActionListener((view, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_GO
-                    || actionId == EditorInfo.IME_ACTION_DONE) {
+        addressField.setOnEditorActionListener((v, action, event) -> {
+            if (action == EditorInfo.IME_ACTION_GO || action == EditorInfo.IME_ACTION_DONE) {
                 navigate(addressField.getText().toString());
                 return true;
             }
             return false;
         });
-        addressRow.addView(addressField, new LinearLayout.LayoutParams(0, -2, 1f));
+        addressRow.addView(addressField, new LinearLayout.LayoutParams(0, -1, 1f));
 
-        Button goButton = makeButton("GO", true);
-        goButton.setTextSize(14);
-        goButton.setOnClickListener(v -> navigate(addressField.getText().toString()));
-        addressRow.addView(goButton, new LinearLayout.LayoutParams(dp(58), dp(44)));
+        TextView go = textButton("GO", true);
+        go.setOnClickListener(v -> navigate(addressField.getText().toString()));
+        addressRow.addView(go, new LinearLayout.LayoutParams(dp(48), dp(42)));
+        root.addView(addressRow, new LinearLayout.LayoutParams(-1, dp(48)));
 
-        LinearLayout.LayoutParams addressParams = new LinearLayout.LayoutParams(-1, dp(58));
-        addressParams.topMargin = dp(13);
-        addressParams.bottomMargin = dp(7);
-        root.addView(addressRow, addressParams);
-
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setGravity(Gravity.CENTER_VERTICAL);
-        statusRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        statusText = new TextView(this);
-        statusText.setText("READY TO EXPLORE");
-        statusText.setTextColor(MUTED);
-        statusText.setTextSize(9);
-        statusText.setLetterSpacing(0.12f);
-        statusRow.addView(statusText, new LinearLayout.LayoutParams(0, dp(19), 1f));
-
-        loadProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        loadProgress.setIndeterminate(true);
-        loadProgress.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        loadProgress.setVisibility(View.GONE);
-        statusRow.addView(loadProgress, new LinearLayout.LayoutParams(dp(62), dp(3)));
-        root.addView(statusRow, new LinearLayout.LayoutParams(-1, dp(20)));
+        View addressDivider = new View(this);
+        addressDivider.setBackgroundColor(LINE);
+        root.addView(addressDivider, new LinearLayout.LayoutParams(-1, dp(1)));
 
         FrameLayout browserFrame = new FrameLayout(this);
-        browserFrame.setBackground(rounded(GLASS, Color.argb(65, 174, 157, 255), 20));
-        browserFrame.setClipToOutline(true);
-
         geckoView = new GeckoView(this);
-        geckoView.setBackgroundColor(SPACE);
+        geckoView.setBackgroundColor(BG);
         browserFrame.addView(geckoView, new FrameLayout.LayoutParams(-1, -1));
 
-        failureOverlay = new LinearLayout(this);
-        failureOverlay.setOrientation(LinearLayout.VERTICAL);
-        failureOverlay.setGravity(Gravity.CENTER);
-        failureOverlay.setPadding(dp(28), dp(24), dp(28), dp(24));
-        failureOverlay.setBackgroundColor(SPACE);
+        failureOverlay = new FrameLayout(this);
+        failureOverlay.setBackgroundColor(BG);
         failureOverlay.setVisibility(View.GONE);
+        LinearLayout failureContent = new LinearLayout(this);
+        failureContent.setGravity(Gravity.CENTER);
+        failureContent.setOrientation(LinearLayout.VERTICAL);
+        failureContent.setPadding(dp(28), dp(24), dp(28), dp(24));
 
-        TextView failureMark = new TextView(this);
-        failureMark.setText("✦");
-        failureMark.setTextColor(ACCENT);
-        failureMark.setTextSize(34);
-        failureMark.setGravity(Gravity.CENTER);
-        failureOverlay.addView(failureMark, new LinearLayout.LayoutParams(-1, dp(52)));
+        TextView symbol = new TextView(this);
+        symbol.setText("✦");
+        symbol.setTextColor(ACCENT);
+        symbol.setTextSize(30);
+        symbol.setGravity(Gravity.CENTER);
+        failureContent.addView(symbol, new LinearLayout.LayoutParams(-1, dp(48)));
 
         TextView failureTitle = new TextView(this);
-        failureTitle.setText("This page is out of reach");
+        failureTitle.setText("Browser stopped");
         failureTitle.setTextColor(TEXT);
-        failureTitle.setTextSize(19);
+        failureTitle.setTextSize(18);
         failureTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         failureTitle.setGravity(Gravity.CENTER);
-        failureOverlay.addView(failureTitle);
+        failureContent.addView(failureTitle);
 
         TextView failureMessage = new TextView(this);
-        failureMessage.setText("Check your connection or try opening the page again.");
+        failureMessage.setText("AstroWeb couldn't keep this page running.");
         failureMessage.setTextColor(MUTED);
         failureMessage.setTextSize(13);
         failureMessage.setGravity(Gravity.CENTER);
         failureMessage.setPadding(0, dp(9), 0, dp(18));
-        failureOverlay.addView(failureMessage);
+        failureContent.addView(failureMessage);
 
-        Button retry = makeButton("TRY AGAIN", true);
-        retry.setOnClickListener(v -> restartBrowser(lastRequestedUrl));
-        failureOverlay.addView(retry, new LinearLayout.LayoutParams(dp(150), dp(46)));
+        TextView retry = textButton("RESTART BROWSER", true);
+        retry.setOnClickListener(v -> {
+            recoveryAttempts = 0;
+            restartBrowser(lastRequestedUrl);
+        });
+        failureContent.addView(retry, new LinearLayout.LayoutParams(dp(170), dp(44)));
 
-        FrameLayout.LayoutParams failureParams =
-                new FrameLayout.LayoutParams(-1, -1);
-        browserFrame.addView(failureOverlay, failureParams);
+        FrameLayout.LayoutParams failureContentParams =
+                new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER);
+        failureOverlay.addView(failureContent, failureContentParams);
+        browserFrame.addView(failureOverlay, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout.LayoutParams browserParams = new LinearLayout.LayoutParams(-1, 0, 1f);
-        browserParams.topMargin = dp(5);
-        browserParams.bottomMargin = dp(9);
+        browserParams.topMargin = dp(3);
+        browserParams.bottomMargin = dp(3);
         root.addView(browserFrame, browserParams);
 
-        LinearLayout controls = new LinearLayout(this);
-        controls.setGravity(Gravity.CENTER);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
+        View toolbarDivider = new View(this);
+        toolbarDivider.setBackgroundColor(Color.argb(55, 177, 159, 255));
+        root.addView(toolbarDivider, new LinearLayout.LayoutParams(-1, dp(1)));
 
-        backButton = makeButton("‹", false);
-        backButton.setTextSize(29);
-        backButton.setContentDescription("Back");
-        backButton.setOnClickListener(v -> {
-            if (session != null && canGoBack) {
-                try {
-                    session.goBack();
-                } catch (RuntimeException error) {
-                    Log.w(TAG, "Back navigation unavailable", error);
-                }
-            }
-        });
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
 
-        forwardButton = makeButton("›", false);
-        forwardButton.setTextSize(29);
-        forwardButton.setContentDescription("Forward");
-        forwardButton.setOnClickListener(v -> {
-            if (session != null && canGoForward) {
-                try {
-                    session.goForward();
-                } catch (RuntimeException error) {
-                    Log.w(TAG, "Forward navigation unavailable", error);
-                }
-            }
-        });
+        backButton = toolbarButton("‹", "Back");
+        backButton.setOnClickListener(v -> goBack());
+        forwardButton = toolbarButton("›", "Forward");
+        forwardButton.setOnClickListener(v -> goForward());
 
-        Button home = makeButton("⌂", false);
-        home.setTextSize(24);
-        home.setContentDescription("Home");
+        TextView home = toolbarButton("⌂", "Home");
         home.setOnClickListener(v -> loadHome());
 
-        Button refresh = makeButton("↻", false);
-        refresh.setTextSize(23);
-        refresh.setContentDescription("Reload");
-        refresh.setOnClickListener(v -> reloadPage());
+        TextView menu = toolbarButton("⋯", "Browser menu");
+        menu.setOnClickListener(v -> showBrowserMenu(menu));
 
-        addControl(controls, backButton);
-        addControl(controls, forwardButton);
-        addControl(controls, home);
-        addControl(controls, refresh);
-        root.addView(controls, new LinearLayout.LayoutParams(-1, dp(54)));
+        addToolbarItem(toolbar, backButton);
+        addToolbarItem(toolbar, forwardButton);
+        addToolbarItem(toolbar, home);
+        addToolbarItem(toolbar, menu);
+        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(49)));
 
         setContentView(root);
-        setStatus("READY TO EXPLORE", false);
+        updateNavigationButtons();
+        root.requestApplyInsets();
     }
 
-    private void openBrowser(String startUrl) {
+    private void openBrowser(String url) {
         try {
-            AstroWebApplication app = (AstroWebApplication) getApplication();
-            GeckoRuntime runtime = app.getGeckoRuntime();
-
+            GeckoRuntime runtime = ((AstroWebApplication) getApplication()).getGeckoRuntime();
             GeckoSession newSession = new GeckoSession();
+
             newSession.setContentDelegate(new GeckoSession.ContentDelegate() {
                 @Override
                 public void onCrash(GeckoSession crashedSession) {
-                    runOnUiThread(() -> {
-                        Log.e(TAG, "Gecko content process crashed");
-                        showFailure("Browser engine stopped",
-                                "AstroWeb can try to restart the browser engine.");
-                    });
+                    Log.e(TAG, "Gecko content process crashed");
+                    handleEngineStopped();
                 }
 
                 @Override
                 public void onKill(GeckoSession killedSession) {
-                    runOnUiThread(() -> {
-                        Log.e(TAG, "Gecko content process was killed");
-                        showFailure("Browser engine stopped",
-                                "The browser process was stopped. Try restarting it.");
-                    });
+                    Log.w(TAG, "Gecko content process was killed");
+                    handleEngineStopped();
                 }
             });
 
             newSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
                 @Override
-                public void onLocationChange(
-                        GeckoSession currentSession,
-                        String url,
+                public void onLocationChange(GeckoSession current, String uri,
                         List<GeckoSession.PermissionDelegate.ContentPermission> permissions,
                         Boolean hasUserGesture) {
                     runOnUiThread(() -> {
-                        if (url == null || addressField == null) return;
-                        lastRequestedUrl = url;
-                        if (url.startsWith(HOME_URL)) {
-                            addressField.setText("");
-                        } else {
-                            addressField.setText(url);
-                            addressField.setSelection(addressField.getText().length());
-                        }
+                        if (uri == null || addressField == null) return;
+                        lastRequestedUrl = uri;
+                        addressField.setText(uri.startsWith(HOME_URL) ? "" : uri);
+                        addressField.setSelection(addressField.getText().length());
                     });
                 }
 
                 @Override
-                public void onCanGoBack(GeckoSession currentSession, boolean value) {
+                public void onCanGoBack(GeckoSession current, boolean value) {
                     runOnUiThread(() -> {
                         canGoBack = value;
                         updateNavigationButtons();
@@ -330,7 +242,7 @@ public class MainActivity extends Activity {
                 }
 
                 @Override
-                public void onCanGoForward(GeckoSession currentSession, boolean value) {
+                public void onCanGoForward(GeckoSession current, boolean value) {
                     runOnUiThread(() -> {
                         canGoForward = value;
                         updateNavigationButtons();
@@ -339,67 +251,66 @@ public class MainActivity extends Activity {
 
                 @Override
                 public GeckoResult<String> onLoadError(
-                        GeckoSession currentSession, String uri, WebRequestError error) {
+                        GeckoSession current, String uri, WebRequestError error) {
                     Log.e(TAG, "Page load failed: " + uri + " — " + error);
                     runOnUiThread(() -> showFailure(
-                            "This page is out of reach",
-                            "Check your connection or verify the address, then try again."
-                    ));
+                            "Page couldn't load",
+                            "Check your connection or the web address and try again."));
                     return null;
                 }
             });
 
             newSession.setProgressDelegate(new GeckoSession.ProgressDelegate() {
                 @Override
-                public void onPageStart(GeckoSession currentSession, String url) {
-                    runOnUiThread(() -> {
-                        failureOverlay.setVisibility(View.GONE);
-                        setStatus("LOADING PAGE", true);
-                    });
+                public void onPageStart(GeckoSession current, String uri) {
+                    runOnUiThread(() -> failureOverlay.setVisibility(View.GONE));
                 }
 
                 @Override
-                public void onPageStop(GeckoSession currentSession, boolean success) {
-                    runOnUiThread(() -> {
-                        setStatus(success ? "READY" : "PAGE LOAD FAILED", false);
-                        if (success) failureOverlay.setVisibility(View.GONE);
-                    });
-                }
-
-                @Override
-                public void onProgressChange(GeckoSession currentSession, int progress) {
-                    runOnUiThread(() -> {
-                        if (loadProgress != null && progress >= 0) {
-                            loadProgress.setProgress(progress);
-                        }
-                    });
+                public void onPageStop(GeckoSession current, boolean success) {
+                    if (success) recoveryAttempts = 0;
                 }
             });
 
             newSession.open(runtime);
             session = newSession;
             geckoView.setSession(session);
-            geckoView.coverUntilFirstPaint(SPACE);
-
-            lastRequestedUrl = startUrl;
-            session.loadUri(startUrl);
+            geckoView.coverUntilFirstPaint(BG);
+            lastRequestedUrl = url;
+            session.loadUri(url);
             updateNavigationButtons();
         } catch (Throwable error) {
-            Log.e(TAG, "Could not initialize GeckoView", error);
+            Log.e(TAG, "GeckoView initialization failed", error);
             showFailure("AstroWeb couldn't start",
-                    "The browser engine could not initialize on this device. Tap below to retry.");
+                    "The browser engine couldn't initialize. Try restarting it.");
         }
+    }
+
+    private void handleEngineStopped() {
+        runOnUiThread(() -> {
+            if (isFinishing() || recoveryScheduled) return;
+            recoveryScheduled = true;
+            if (recoveryAttempts < 1) {
+                recoveryAttempts++;
+                handler.postDelayed(() -> {
+                    recoveryScheduled = false;
+                    if (!isFinishing()) restartBrowser(lastRequestedUrl);
+                }, 900);
+            } else {
+                recoveryScheduled = false;
+                showFailure("Browser engine stopped",
+                        "The browser stopped more than once. Restart it to continue.");
+            }
+        });
     }
 
     private void restartBrowser(String target) {
         failureOverlay.setVisibility(View.GONE);
-        if (session != null) {
-            try {
-                session.close();
-            } catch (RuntimeException error) {
-                Log.w(TAG, "Previous browser session could not close cleanly", error);
-            }
-            session = null;
+        GeckoSession old = session;
+        session = null;
+        if (old != null) {
+            try { old.close(); }
+            catch (RuntimeException error) { Log.w(TAG, "Session close failed", error); }
         }
         canGoBack = false;
         canGoForward = false;
@@ -407,10 +318,9 @@ public class MainActivity extends Activity {
         openBrowser(target == null || target.isEmpty() ? HOME_URL : target);
     }
 
-    private void navigate(String rawInput) {
-        if (session == null || rawInput == null) return;
-
-        String input = rawInput.trim();
+    private void navigate(String raw) {
+        if (session == null || raw == null) return;
+        String input = raw.trim();
         if (input.isEmpty()) return;
 
         String target = input;
@@ -426,117 +336,132 @@ public class MainActivity extends Activity {
         lastRequestedUrl = target;
         failureOverlay.setVisibility(View.GONE);
         hideKeyboard();
-
-        try {
-            session.loadUri(target);
-        } catch (RuntimeException error) {
-            Log.e(TAG, "Navigation could not start: " + target, error);
-            showFailure("Navigation unavailable", "Try restarting the browser engine.");
+        try { session.loadUri(target); }
+        catch (RuntimeException error) {
+            Log.e(TAG, "Navigation failed", error);
+            showFailure("Navigation unavailable", "Restart the browser and try again.");
         }
     }
 
     private void loadHome() {
-        if (session != null) {
-            lastRequestedUrl = HOME_URL;
-            failureOverlay.setVisibility(View.GONE);
-            session.loadUri(HOME_URL);
+        if (session == null) {
+            restartBrowser(HOME_URL);
+            return;
+        }
+        lastRequestedUrl = HOME_URL;
+        failureOverlay.setVisibility(View.GONE);
+        session.loadUri(HOME_URL);
+    }
+
+    private void goBack() {
+        if (session != null && canGoBack) {
+            try { session.goBack(); }
+            catch (RuntimeException error) { Log.w(TAG, "Back failed", error); }
         }
     }
 
-    private void reloadPage() {
-        if (session == null) {
-            restartBrowser(lastRequestedUrl);
-            return;
+    private void goForward() {
+        if (session != null && canGoForward) {
+            try { session.goForward(); }
+            catch (RuntimeException error) { Log.w(TAG, "Forward failed", error); }
         }
-        failureOverlay.setVisibility(View.GONE);
-        try {
-            session.reload();
-        } catch (RuntimeException error) {
-            Log.e(TAG, "Reload failed", error);
-            restartBrowser(lastRequestedUrl);
-        }
+    }
+
+    private void showBrowserMenu(View anchor) {
+        PopupMenu popup = new PopupMenu(this, anchor);
+        popup.getMenu().add("Reload page").setOnMenuItemClickListener(item -> {
+            if (session != null) {
+                try { session.reload(); }
+                catch (RuntimeException error) { restartBrowser(lastRequestedUrl); }
+            } else restartBrowser(lastRequestedUrl);
+            return true;
+        });
+        popup.getMenu().add("Share page").setOnMenuItemClickListener(item -> {
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType("text/plain");
+            share.putExtra(Intent.EXTRA_TEXT, lastRequestedUrl);
+            startActivity(Intent.createChooser(share, "Share page"));
+            return true;
+        });
+        popup.getMenu().add("Copy address").setOnMenuItemClickListener(item -> {
+            ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("Web address", lastRequestedUrl));
+                Toast.makeText(this, "Address copied", Toast.LENGTH_SHORT).show();
+            }
+            return true;
+        });
+        popup.getMenu().add("Open in another browser").setOnMenuItemClickListener(item -> {
+            try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(lastRequestedUrl))); }
+            catch (Exception error) {
+                Toast.makeText(this, "No compatible browser found", Toast.LENGTH_SHORT).show();
+            }
+            return true;
+        });
+        popup.show();
     }
 
     private void showFailure(String title, String message) {
         if (failureOverlay == null) return;
-        if (failureOverlay.getChildCount() > 1
-                && failureOverlay.getChildAt(1) instanceof TextView) {
-            ((TextView) failureOverlay.getChildAt(1)).setText(title);
-        }
-        if (failureOverlay.getChildCount() > 2
-                && failureOverlay.getChildAt(2) instanceof TextView) {
-            ((TextView) failureOverlay.getChildAt(2)).setText(message);
-        }
+        LinearLayout content = (LinearLayout) failureOverlay.getChildAt(0);
+        ((TextView) content.getChildAt(1)).setText(title);
+        ((TextView) content.getChildAt(2)).setText(message);
         failureOverlay.setVisibility(View.VISIBLE);
-        setStatus("BROWSER NEEDS ATTENTION", false);
     }
 
-    private void setStatus(String message, boolean loading) {
-        if (statusText != null) statusText.setText(message);
-        if (loadProgress != null) {
-            loadProgress.setVisibility(loading ? View.VISIBLE : View.GONE);
-            if (loading) loadProgress.setProgress(0);
+    private TextView textButton(String label, boolean accent) {
+        TextView button = new TextView(this);
+        button.setText(label);
+        button.setTextColor(accent ? Color.rgb(18, 15, 38) : TEXT);
+        button.setTextSize(accent ? 12 : 23);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setGravity(Gravity.CENTER);
+        if (accent) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(ACCENT);
+            bg.setCornerRadius(dp(8));
+            button.setBackground(bg);
+        } else {
+            button.setBackgroundResource(android.R.drawable.list_selector_background);
         }
+        button.setContentDescription(label);
+        return button;
     }
 
-    private void hideKeyboard() {
-        try {
-            InputMethodManager manager =
-                    (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (manager != null && addressField != null) {
-                manager.hideSoftInputFromWindow(addressField.getWindowToken(), 0);
-                addressField.clearFocus();
-            }
-        } catch (RuntimeException error) {
-            Log.w(TAG, "Could not hide keyboard", error);
-        }
+    private TextView toolbarButton(String glyph, String description) {
+        TextView button = new TextView(this);
+        button.setText(glyph);
+        button.setTextSize(27);
+        button.setTextColor(TEXT);
+        button.setGravity(Gravity.CENTER);
+        button.setContentDescription(description);
+        button.setBackgroundResource(android.R.drawable.list_selector_background);
+        return button;
+    }
+
+    private void addToolbarItem(LinearLayout toolbar, TextView button) {
+        toolbar.addView(button, new LinearLayout.LayoutParams(0, -1, 1f));
     }
 
     private void updateNavigationButtons() {
         if (backButton != null) {
             backButton.setEnabled(canGoBack);
-            backButton.setAlpha(canGoBack ? 1f : 0.38f);
+            backButton.setAlpha(canGoBack ? 1f : 0.35f);
         }
         if (forwardButton != null) {
             forwardButton.setEnabled(canGoForward);
-            forwardButton.setAlpha(canGoForward ? 1f : 0.38f);
+            forwardButton.setAlpha(canGoForward ? 1f : 0.35f);
         }
     }
 
-    private Button makeButton(String label, boolean highlighted) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setAllCaps(false);
-        button.setTextSize(14);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setTextColor(highlighted ? Color.rgb(17, 15, 38) : TEXT);
-        button.setMinWidth(0);
-        button.setMinimumWidth(0);
-        button.setMinHeight(0);
-        button.setMinimumHeight(0);
-        button.setPadding(dp(8), dp(3), dp(8), dp(3));
-        button.setBackground(rounded(
-                highlighted ? ACCENT : SURFACE,
-                highlighted ? Color.argb(80, 255, 255, 255) : BORDER,
-                highlighted ? 18 : 20
-        ));
-        return button;
-    }
-
-    private void addControl(LinearLayout row, Button button) {
-        LinearLayout.LayoutParams params =
-                new LinearLayout.LayoutParams(0, dp(50), 1f);
-        params.leftMargin = dp(4);
-        params.rightMargin = dp(4);
-        row.addView(button, params);
-    }
-
-    private GradientDrawable rounded(int color, int strokeColor, int radiusDp) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(color);
-        drawable.setCornerRadius(dp(radiusDp));
-        drawable.setStroke(dp(1), strokeColor);
-        return drawable;
+    private void hideKeyboard() {
+        InputMethodManager manager =
+                (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.hideSoftInputFromWindow(addressField.getWindowToken(), 0);
+            addressField.clearFocus();
+        }
     }
 
     private int dp(int value) {
@@ -545,25 +470,16 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (session != null && canGoBack) {
-            try {
-                session.goBack();
-                return;
-            } catch (RuntimeException error) {
-                Log.w(TAG, "Back navigation failed", error);
-            }
-        }
-        super.onBackPressed();
+        if (canGoBack) goBack();
+        else super.onBackPressed();
     }
 
     @Override
     protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
         if (session != null) {
-            try {
-                session.close();
-            } catch (RuntimeException error) {
-                Log.w(TAG, "Session close failed", error);
-            }
+            try { session.close(); }
+            catch (RuntimeException error) { Log.w(TAG, "Session close failed", error); }
             session = null;
         }
         super.onDestroy();
