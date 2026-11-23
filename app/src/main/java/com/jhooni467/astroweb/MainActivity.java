@@ -2263,7 +2263,7 @@ public class MainActivity extends Activity {
             tab.recoveryScheduled = true;
             tab.recoveryAttempts++;
             lastEngineDiagnostics = buildEngineDiagnostics(tab, stoppedSession, reason);
-            Log.e(TAG, "GeckoView process stopped. Diagnostic summary:\\n" + lastEngineDiagnostics);
+            Log.e(TAG, "GeckoView process stopped. Diagnostic summary:\n" + lastEngineDiagnostics);
             if (tab == activeTab) {
                 pageProgress.setVisibility(View.INVISIBLE);
                 showFailure("La pestaña se detuvo",
@@ -2294,21 +2294,21 @@ public class MainActivity extends Activity {
         } catch (RuntimeException ignored) { }
 
         long mb = 1024L * 1024L;
-        return "AstroWeb — diagnóstico de proceso\\n"
-                + "Evento: " + reason + "\\n"
+        return "AstroWeb — diagnóstico de proceso\n"
+                + "Evento: " + reason + "\n"
                 + "Fecha: " + android.text.format.DateFormat.format(
-                        "yyyy-MM-dd HH:mm:ss", new java.util.Date()) + "\\n"
-                + "Versión de AstroWeb: " + appVersion + "\\n"
-                + "GeckoView: 160.0.20261116130455\\n"
-                + "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\\n"
-                + "Dispositivo: " + Build.MANUFACTURER + " " + Build.MODEL + "\\n"
-                + "Memoria libre: " + (memory.availMem / mb) + " MB\\n"
-                + "Memoria total: " + (memory.totalMem / mb) + " MB\\n"
-                + "Android indica memoria baja: " + memory.lowMemory + "\\n"
-                + "Memoria PSS aproximada de AstroWeb: " + (Debug.getPss() / 1024L) + " MB\\n"
-                + "Pestañas abiertas: " + tabs.size() + "\\n"
-                + "Pestaña privada: " + (tab != null && tab.privateMode) + "\\n"
-                + "Sesión marcada como abierta: " + sessionOpen + "\\n"
+                        "yyyy-MM-dd HH:mm:ss", new java.util.Date()) + "\n"
+                + "Versión de AstroWeb: " + appVersion + "\n"
+                + "GeckoView: 160.0.20261116130455\n"
+                + "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
+                + "Dispositivo: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
+                + "Memoria libre: " + (memory.availMem / mb) + " MB\n"
+                + "Memoria total: " + (memory.totalMem / mb) + " MB\n"
+                + "Android indica memoria baja: " + memory.lowMemory + "\n"
+                + "Memoria PSS aproximada de AstroWeb: " + (Debug.getPss() / 1024L) + " MB\n"
+                + "Pestañas abiertas: " + tabs.size() + "\n"
+                + "Pestaña privada: " + (tab != null && tab.privateMode) + "\n"
+                + "Sesión marcada como abierta: " + sessionOpen + "\n"
                 + "La dirección visitada y el historial no se incluyen.";
     }
 
