@@ -1,6 +1,7 @@
 package com.jhooni467.astroweb;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.animation.ValueAnimator;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -21,6 +22,8 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
+import android.os.Debug;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Parcel;
@@ -121,6 +124,8 @@ public class MainActivity extends Activity {
     private ImageButton forwardButton;
     private ImageButton bookmarkButton;
     private FrameLayout failureOverlay;
+    private TextView diagnosticsCopyButton;
+    private String lastEngineDiagnostics;
     private BrowserTab activeTab;
     private SharedPreferences storage;
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
@@ -219,12 +224,25 @@ public class MainActivity extends Activity {
             if (activeTab != null) {
                 activeTab.recoveryAttempts = 0;
                 activeTab.recoveryScheduled = false;
+                clearEngineDiagnostics();
                 restartTab(activeTab, activeTab.url);
             } else {
                 createTab(HOME_URL);
             }
         });
         failureContent.addView(retry);
+
+        diagnosticsCopyButton = new TextView(this);
+        diagnosticsCopyButton.setText("Copiar diagnóstico");
+        diagnosticsCopyButton.setTextColor(ACCENT);
+        diagnosticsCopyButton.setTextSize(13);
+        diagnosticsCopyButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        diagnosticsCopyButton.setGravity(Gravity.CENTER);
+        diagnosticsCopyButton.setPadding(dp(16), dp(9), dp(16), dp(8));
+        diagnosticsCopyButton.setVisibility(View.GONE);
+        diagnosticsCopyButton.setOnClickListener(v -> copyEngineDiagnostics());
+        failureContent.addView(diagnosticsCopyButton);
+
         failureOverlay.addView(failureContent,
                 new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         browserFrame.addView(failureOverlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1226,13 +1244,13 @@ public class MainActivity extends Activity {
                 @Override
                 public void onCrash(GeckoSession crashedSession) {
                     Log.e(TAG, "Gecko content process crashed");
-                    handleEngineStopped(tab, crashedSession);
+                    handleEngineStopped(tab, crashedSession, "onCrash");
                 }
 
                 @Override
                 public void onKill(GeckoSession killedSession) {
                     Log.w(TAG, "Gecko content process was killed");
-                    handleEngineStopped(tab, killedSession);
+                    handleEngineStopped(tab, killedSession, "onKill");
                 }
 
                 @Override
@@ -2183,6 +2201,7 @@ public class MainActivity extends Activity {
 
     private void activateTab(BrowserTab tab) {
         if (tab == null) return;
+        clearEngineDiagnostics();
         if (tab.session == null || !tab.session.isOpen()) {
             if (tab.session != null) tab.session = null;
             initializeTab(tab, tab.url, true);
@@ -2223,6 +2242,7 @@ public class MainActivity extends Activity {
             createTab(HOME_URL);
             return;
         }
+        clearEngineDiagnostics();
         GeckoSession old = tab.session;
         tab.session = null;
         if (old != null) {
@@ -2236,25 +2256,88 @@ public class MainActivity extends Activity {
         initializeTab(tab, tab.url, tab == activeTab);
     }
 
-    private void handleEngineStopped(BrowserTab tab, GeckoSession stoppedSession) {
+    private void handleEngineStopped(
+            BrowserTab tab, GeckoSession stoppedSession, String reason) {
         runOnUiThread(() -> {
             if (isFinishing() || tab.session != stoppedSession || tab.recoveryScheduled) return;
             tab.recoveryScheduled = true;
             tab.recoveryAttempts++;
+            lastEngineDiagnostics = buildEngineDiagnostics(tab, stoppedSession, reason);
+            Log.e(TAG, "GeckoView process stopped. Diagnostic summary:\n" + lastEngineDiagnostics);
             if (tab == activeTab) {
                 pageProgress.setVisibility(View.INVISIBLE);
                 showFailure("La pestaña se detuvo",
-                        "AstroWeb no la recargará sola. Pulsa Reintentar para restaurarla.");
+                        "El proceso de la página se detuvo. Copia el diagnóstico para investigar el fallo.");
             } else {
                 Log.w(TAG, "A background tab stopped; it will recover when selected");
             }
         });
     }
 
+    private String buildEngineDiagnostics(
+            BrowserTab tab, GeckoSession stoppedSession, String reason) {
+        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+        ActivityManager activityManager =
+                (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        if (activityManager != null) activityManager.getMemoryInfo(memory);
+
+        String appVersion = "desconocida";
+        try {
+            android.content.pm.PackageInfo packageInfo =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            if (packageInfo.versionName != null) appVersion = packageInfo.versionName;
+        } catch (Exception ignored) { }
+
+        boolean sessionOpen = false;
+        try {
+            sessionOpen = stoppedSession != null && stoppedSession.isOpen();
+        } catch (RuntimeException ignored) { }
+
+        long mb = 1024L * 1024L;
+        return "AstroWeb — diagnóstico de proceso\n"
+                + "Evento: " + reason + "\n"
+                + "Fecha: " + android.text.format.DateFormat.format(
+                        "yyyy-MM-dd HH:mm:ss", new java.util.Date()) + "\n"
+                + "Versión de AstroWeb: " + appVersion + "\n"
+                + "GeckoView: 160.0.20261116130455\n"
+                + "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
+                + "Dispositivo: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
+                + "Memoria libre: " + (memory.availMem / mb) + " MB\n"
+                + "Memoria total: " + (memory.totalMem / mb) + " MB\n"
+                + "Android indica memoria baja: " + memory.lowMemory + "\n"
+                + "Memoria PSS aproximada de AstroWeb: " + (Debug.getPss() / 1024L) + " MB\n"
+                + "Pestañas abiertas: " + tabs.size() + "\n"
+                + "Pestaña privada: " + (tab != null && tab.privateMode) + "\n"
+                + "Sesión marcada como abierta: " + sessionOpen + "\n"
+                + "La dirección visitada y el historial no se incluyen.";
+    }
+
+    private void copyEngineDiagnostics() {
+        if (lastEngineDiagnostics == null || lastEngineDiagnostics.isEmpty()) {
+            Toast.makeText(this, "No hay un diagnóstico disponible", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ClipboardManager clipboard =
+                (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            Toast.makeText(this, "No se pudo copiar el diagnóstico", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        clipboard.setPrimaryClip(
+                ClipData.newPlainText("Diagnóstico AstroWeb", lastEngineDiagnostics));
+        Toast.makeText(this, "Diagnóstico copiado", Toast.LENGTH_SHORT).show();
+    }
+
+    private void clearEngineDiagnostics() {
+        lastEngineDiagnostics = null;
+        if (diagnosticsCopyButton != null) diagnosticsCopyButton.setVisibility(View.GONE);
+    }
+
     private void navigate(String raw) {
         if (activeTab == null || activeTab.session == null || raw == null) return;
         String input = raw.trim();
         if (input.isEmpty()) return;
+        clearEngineDiagnostics();
         dismissAddressSuggestions();
 
         String target = input;
@@ -3183,6 +3266,10 @@ public class MainActivity extends Activity {
         LinearLayout content = (LinearLayout) failureOverlay.getChildAt(0);
         ((TextView) content.getChildAt(0)).setText(title);
         ((TextView) content.getChildAt(1)).setText(message);
+        if (diagnosticsCopyButton != null) {
+            diagnosticsCopyButton.setVisibility(
+                    lastEngineDiagnostics == null ? View.GONE : View.VISIBLE);
+        }
         failureOverlay.setVisibility(View.VISIBLE);
     }
 

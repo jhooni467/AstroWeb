@@ -2,7 +2,7 @@ name: Android build
 
 on:
   push:
-    branches: [main]
+    branches: [main, "fix/0.19-crash-diagnostics"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -40,6 +40,6 @@ jobs:
       - name: Upload architecture-specific APKs
         uses: actions/upload-artifact@v4
         with:
-          name: AstroWeb-0.18-APKs
+          name: AstroWeb-0.19-APKs
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error

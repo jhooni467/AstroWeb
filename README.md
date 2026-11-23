@@ -4,7 +4,7 @@ AstroWeb is a minimalist Android browser powered by Mozilla GeckoView.
 
 ## Current version
 
-- Version: **0.18**
+- Version: **0.19 (diagnostic build)**
 - Android application, built with Java 17 and Gradle
 - GeckoView 160
 - Architecture-specific debug APKs for ARM64 and ARMv7
@@ -22,6 +22,7 @@ AstroWeb is a minimalist Android browser powered by Mozilla GeckoView.
 - Site permission prompts and per-site permission preferences
 - Mobile and desktop display modes
 - Manual tab recovery after a browser content-process stop, preventing silent automatic reloads
+- Copyable, privacy-conscious diagnostics when GeckoView reports a content-process crash or kill
 - Lightweight local start page with nonessential entrance animations removed
 - Find in page and browser navigation controls
 
@@ -34,3 +35,7 @@ The browser stores search-query history locally in app preferences. It is not up
 GitHub Actions runs `:app:assembleDebug` on pushes to `main` and uploads architecture-specific APKs as workflow artifacts.
 
 A successful build confirms compilation and artifact upload; it does not replace testing on a physical Android device.
+
+## v0.19 diagnostic focus
+
+This build adds a copyable diagnostic summary for the recurring GeckoView content-process stop. It distinguishes the `onCrash` and `onKill` callbacks and records Android/device and memory measurements. It deliberately excludes visited URLs and browsing history. This is a diagnostic step, not confirmation that the underlying stop has been fixed.
